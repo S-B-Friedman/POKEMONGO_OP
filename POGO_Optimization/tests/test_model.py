@@ -114,17 +114,17 @@ def test_purified_is_cheaper_than_normal():
     assert purified[0] < normal[0] and purified[1] <= normal[1]
 
 
-def test_xl_candy_starts_at_forty_one():
-    """39.0-40.5 is the last regular-candy tier (15 each); XL begins at 41.0
+def test_xl_candy_starts_at_forty():
+    """39.0-39.5 is the last regular-candy tier (15 each); XL begins at 40.0
     and restarts its own 10/12/15/17/20 progression."""
     _, candy, xl = cumulative_cost(30.0, 35.0)
     assert xl == 0 and candy > 0
 
-    _, candy_to_41, xl_to_41 = cumulative_cost(40.0, 41.0)
-    assert candy_to_41 == 30 and xl_to_41 == 0
+    _, candy_to_40, xl_to_40 = cumulative_cost(39.0, 40.0)
+    assert candy_to_40 == 30 and xl_to_40 == 0
 
-    _, candy_past_41, xl_past_41 = cumulative_cost(41.0, 45.0)
-    assert xl_past_41 > 0 and candy_past_41 == 0
+    _, candy_past_40, xl_past_40 = cumulative_cost(40.0, 45.0)
+    assert xl_past_40 > 0 and candy_past_40 == 0
 
 
 # --------------------------------------------------------------------------
@@ -163,7 +163,7 @@ def test_xl_candy_constrained_separately_from_candy():
     A species with 300 candy could therefore spend 300 XL, worth roughly
     30,000 regular candy of buying power.
     """
-    collection = [make("p1", species_id=6, level=40.5)]
+    collection = [make("p1", species_id=6, level=39.5)]
 
     generous_candy = build_and_solve(
         collection,
@@ -172,9 +172,10 @@ def test_xl_candy_constrained_separately_from_candy():
         xl_candy_inventory={6: 0},
         max_steps_per_pokemon=10,
     )
+    assert generous_candy.selections
     for s in generous_candy.selections:
         assert s.xl_candy == 0
-        assert s.target_level <= 41.0
+        assert s.target_level <= 40.0
 
 
 def test_one_target_level_per_pokemon():
@@ -300,7 +301,7 @@ def test_tuple_passed_as_candy_inventory_is_rejected():
 REAL_CANDY = {}
 for _lo, _hi, _c in [(1, 10.5, 1), (11, 20.5, 2), (21, 25.5, 3), (26, 30.5, 4),
                      (31, 32.5, 6), (33, 34.5, 8), (35, 36.5, 10),
-                     (37, 38.5, 12), (39, 40.5, 15)]:
+                     (37, 38.5, 12), (39, 39.5, 15)]:
     _l = _lo
     while _l <= _hi:
         REAL_CANDY[round(_l, 1)] = _c
@@ -323,13 +324,13 @@ def test_stardust_cost_matches_published_table(level, expected):
 
 
 def test_xl_candy_progression_restarts_at_ten():
-    """If XL began at 40.0 it would start at 15, breaking the 10/12/15/17/20
-    progression. That's the evidence the boundary is 41.0."""
-    assert step_cost(41.0)[2] == 10
-    assert step_cost(43.0)[2] == 12
-    assert step_cost(49.0)[2] == 20
-    # 39.0-40.5 is still regular candy
-    assert step_cost(40.0)[1] == 15 and step_cost(40.0)[2] == 0
+    """XL restarts its own 10/12/15/17/20 progression at level 40, per
+    GAME_MASTER's xlCandyMinPokemonLevel."""
+    assert step_cost(40.0)[2] == 10
+    assert step_cost(42.0)[2] == 12
+    assert step_cost(48.0)[2] == 20
+    # 39.0-39.5 is still regular candy
+    assert step_cost(39.0)[1] == 15 and step_cost(39.0)[2] == 0
 
 
 def test_half_levels_use_the_quadratic_mean():

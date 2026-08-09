@@ -63,10 +63,10 @@ to *spend on*, which is a question about improvement per unit cost.
 
 ## Caveats and open questions
 
-- **XL candy boundary is level 41.0.** This is the one number I'd re-verify
-  against GameMaster. Evidence for 41.0: XL amounts restart at 10/12/15/17/20,
-  and putting the boundary at 40.0 would start XL at 15 and break that
-  progression. An earlier revision had this wrong at 40.0.
+- **XL candy boundary is level 40.0**, verified against GameMaster's
+  `xlCandyMinPokemonLevel` (see `scripts/build_reference.py --check-costs`).
+  A prior revision had this at 41.0 — plausible since XL amounts restart
+  their own 10/12/15/17/20 progression, but the ladder sat one level high.
 - **`BarLayout` fractions are estimates.** They work on a synthetic screenshot
   built to match them, which proves the machinery, not the numbers. Reading the
   wrong pixel rows produces confidently wrong IVs — worse than no IVs.

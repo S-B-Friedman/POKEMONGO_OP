@@ -195,10 +195,11 @@ usually where the interesting conversation is:
   curve goes linear. Validated indirectly — `combat_power()` reproduces the
   published CP of five known perfect-IV Pokémon at level 40 exactly, which only
   works if the CPM table and the stat formulas are both right.
-- **The XL candy boundary (level 41.0) is the one number worth re-checking**
-  against GameMaster. The evidence for 41.0 is that XL amounts restart at
-  10/12/15/17/20; putting the boundary at 40.0 would start XL at 15 and break
-  that progression.
+- **The XL candy boundary is level 40.0**, verified against GameMaster's
+  `xlCandyMinPokemonLevel` (see `scripts/build_reference.py --check-costs`).
+  An earlier revision had this at 41.0, which looked plausible because XL
+  amounts restart their own 10/12/15/17/20 progression — but the whole ladder
+  sat one level high.
 - **Type effectiveness is not modeled** (see above), so `--bulk` and the
   collector weights are the only tuning available.
 
