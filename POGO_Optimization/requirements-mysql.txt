@@ -1,0 +1,4 @@
+# Optional: only needed for `--source mysql`.
+#   pip install -r requirements-mysql.txt
+-r requirements.txt
+mysql-connector-python>=8.0

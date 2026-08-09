@@ -1,0 +1,6 @@
+-r requirements.txt
+opencv-python-headless>=4.8
+pytesseract>=0.3.10
+Pillow>=10.0
+# Optional alternative OCR engine:
+# google-cloud-vision>=3.4
