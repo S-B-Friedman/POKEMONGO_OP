@@ -15,7 +15,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field, asdict
 from difflib import get_close_matches
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 # --------------------------------------------------------------------------
 # Field extraction
@@ -148,6 +148,21 @@ def match_species_name(text: str, known_names: Iterable[str], cutoff: float = 0.
 
 IV_MAX = 15
 
+# The appraisal bar is drawn as three segments of five IV each, separated by
+# small gaps. Those gaps are never filled, so measuring "filled pixels / total
+# span" charges them against the fill and under-reads every stat.
+#
+# On the measured capture the gaps are 3.3% of the span, which is about half an
+# IV -- small, but biased in one direction and worst at the top of the range,
+# where it is exactly the difference between a 15 and a 14. Fill is therefore
+# measured against the summed segment widths.
+#
+# (The much larger error on real screenshots was horizontal: the old default
+# span ran to 0.945 of the width, roughly twice the bar, and read 11 where the
+# truth was 14. See BarLayout.)
+IV_BAR_SEGMENTS = 3
+IV_PER_SEGMENT = IV_MAX // IV_BAR_SEGMENTS
+
 
 def iv_from_bar_fill(fill_ratio: float) -> int:
     """Convert a 0..1 appraisal bar fill into an IV.
@@ -160,6 +175,107 @@ def iv_from_bar_fill(fill_ratio: float) -> int:
     if not 0.0 <= fill_ratio <= 1.0:
         raise ValueError(f"fill_ratio must be in [0, 1], got {fill_ratio}")
     return max(0, min(IV_MAX, round(fill_ratio * IV_MAX)))
+
+
+@dataclass(frozen=True)
+class BarReading:
+    """One appraisal bar, measured against its segments rather than its span."""
+
+    ratio: float
+    segments: int
+    filled_px: int
+    track_px: int
+
+    @property
+    def plausible(self) -> bool:
+        """Whether this looks like a real appraisal bar.
+
+        Three segments is what the game draws. Anything else means the scanline
+        missed the bar, caught the label text, or ran into the team leader
+        standing over the right half of the card -- all of which produce a
+        number that looks like an IV and is not one.
+        """
+        return self.segments == IV_BAR_SEGMENTS and self.track_px > 0
+
+
+def contiguous_runs(
+    flags: Sequence[bool], *, max_gap: int = 3, min_length: int = 20
+) -> list[tuple[int, int]]:
+    """Group truthy indices into (start, end) runs, bridging tiny gaps.
+
+    `max_gap` absorbs anti-aliasing at segment ends; `min_length` drops specks
+    so a stray pixel does not read as a fourth segment.
+    """
+    idx = [i for i, f in enumerate(flags) if f]
+    if not idx:
+        return []
+    runs: list[list[int]] = [[idx[0], idx[0]]]
+    for i in idx[1:]:
+        if i - runs[-1][1] <= max_gap:
+            runs[-1][1] = i
+        else:
+            runs.append([i, i])
+    return [(a, b) for a, b in runs if b - a + 1 >= min_length]
+
+
+def find_bar_cluster(
+    runs: Sequence[tuple[int, int]],
+    *,
+    width_tolerance: float = 0.30,
+    max_gap_fraction: float = 0.25,
+    min_width: int = 20,
+) -> list[tuple[int, int]] | None:
+    """Pick the three runs that look like one appraisal bar.
+
+    Requiring a scanline to contain *exactly* three runs does not survive a real
+    screenshot: the same row also crosses the team leader, the appraisal badge
+    and whatever else shares that band, so the row reports five or six runs and
+    the bar is missed entirely. Instead, look for three consecutive runs of
+    similar width separated by gaps small relative to that width, which is what
+    a segmented bar looks like and what arbitrary UI does not.
+    """
+    best: tuple[int, list[tuple[int, int]]] | None = None
+    for i in range(len(runs) - 2):
+        trio = list(runs[i:i + 3])
+        widths = [b - a + 1 for a, b in trio]
+        if min(widths) < min_width:
+            continue
+        if max(widths) / min(widths) > 1.0 + width_tolerance:
+            continue
+        gaps = [trio[1][0] - trio[0][1], trio[2][0] - trio[1][1]]
+        if any(g < 1 or g > max_gap_fraction * min(widths) for g in gaps):
+            continue
+        span = trio[-1][1] - trio[0][0] + 1
+        if best is None or span > best[0]:
+            best = (span, trio)
+    return best[1] if best else None
+
+
+def bar_reading(
+    fill: Sequence[bool],
+    track: Sequence[bool],
+    *,
+    min_length: int = 20,
+    cluster: bool = True,
+) -> BarReading:
+    """Measure one bar scanline.
+
+    `fill` marks coloured (filled) pixels, `track` marks the bar's own pixels --
+    filled or empty. Fill is measured against the summed segment widths, so the
+    gaps between segments are excluded rather than counted as unfilled.
+    """
+    if len(fill) != len(track):
+        raise ValueError("fill and track must be the same length")
+
+    runs = contiguous_runs(track, min_length=min_length)
+    if cluster and len(runs) > IV_BAR_SEGMENTS:
+        runs = find_bar_cluster(runs) or runs
+
+    total = sum(b - a + 1 for a, b in runs)
+    filled = sum(1 for a, b in runs for x in range(a, b + 1) if fill[x])
+    ratio = (filled / total) if total else 0.0
+    return BarReading(ratio=min(1.0, ratio), segments=len(runs),
+                      filled_px=filled, track_px=total)
 
 
 def iv_confidence(fill_ratio: float) -> float:
@@ -186,15 +302,27 @@ class BarLayout:
     The original hardcoded pixel rows (1620:1650, 100:1100), which only worked
     on one device at one resolution. Fractions survive a screenshot from any
     phone; `--calibrate` in ocr_ingest.py dumps the crops so they can be checked
-    against a real screenshot rather than guessed at.
+    against a real screenshot.
+
+    CALIBRATION. These were estimates against a synthetic screenshot until they
+    were measured on a real 1206x2622 capture. The vertical positions were very
+    nearly right (0.760/0.807/0.854 against a measured 0.767/0.809/0.851); the
+    horizontal ones were not. `left`/`right` assumed the bars span the screen,
+    but the appraisal card occupies only the lower left -- the team leader stands
+    over the right half -- so the old span sampled mostly card background and
+    the leader's shoulder.
+
+    These remain one device at one resolution. Prefer `detect_bars()`, which
+    finds the bars in the image and does not care about any of these numbers;
+    this is the fallback for when detection fails.
     """
 
-    attack_top: float = 0.760
-    defense_top: float = 0.807
-    hp_top: float = 0.854
-    bar_height: float = 0.014
-    left: float = 0.055
-    right: float = 0.945
+    attack_top: float = 0.767
+    defense_top: float = 0.809
+    hp_top: float = 0.851
+    bar_height: float = 0.010
+    left: float = 0.118
+    right: float = 0.466
 
     def regions(self, height: int, width: int) -> dict[str, tuple[int, int, int, int]]:
         """-> {stat: (y0, y1, x0, x1)} in pixels for a given image size."""

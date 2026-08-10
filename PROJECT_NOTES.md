@@ -19,7 +19,7 @@ exists for the things that are expensive to reconstruct from code alone.
 | Reference data | Done | 1,486 species / 384 moves from GAME_MASTER |
 | Poke Genie import | Done | Round-trips level ranges against recomputed CP |
 | HTTP API | Done, in-memory | Swap `STATE` for `db.py` next |
-| Bar crop geometry | **Estimated** | Synthetic screenshot only — needs a real one |
+| Bar crop geometry | Calibrated | Real 1206x2622 capture; IVs reproduce CP **and** HP |
 | Grid tile geometry | **Not built** | Needs a real grid screenshot |
 | Scroll tracking | **Not built** | Needs a real swipe video |
 
@@ -70,9 +70,24 @@ to *spend on*, which is a question about improvement per unit cost.
   `xlCandyMinPokemonLevel` (see `scripts/build_reference.py --check-costs`).
   A prior revision had this at 41.0 — plausible since XL amounts restart
   their own 10/12/15/17/20 progression, but the ladder sat one level high.
-- **`BarLayout` fractions are estimates.** They work on a synthetic screenshot
-  built to match them, which proves the machinery, not the numbers. Reading the
-  wrong pixel rows produces confidently wrong IVs — worse than no IVs.
+- **`BarLayout` is calibrated now, against one device.** Measured on a real
+  1206x2622 capture. The vertical fractions had been very nearly right
+  (0.760/0.807/0.854 against a measured 0.767/0.809/0.851); the horizontal ones
+  were not, because they assumed the bars span the screen when the appraisal
+  card occupies only the lower left. Prefer `detect_bars()`, which finds the
+  bars in the image and ignores the fractions entirely — they are the fallback.
+  One device at one resolution is still a calibration, not a guarantee.
+
+  Validation worth repeating on any new device: extract the IVs, then check
+  that exactly one level reproduces both the displayed CP and the displayed HP.
+  It did for both test subjects (15/14/14 at L11 → CP 292 / HP 55; 14/4/4 at
+  L8 → CP 313 / HP 49). Two independent observations agreeing on one level is
+  much stronger evidence than a bar that merely looks right.
+
+- **A maxed stat is drawn red, not orange.** At 15/15 the game recolours the
+  whole bar. Any orange-only reader scores a perfect stat as zero, which is the
+  worst error available here — it turns the best Pokémon in a collection into
+  the worst, confidently.
 - **Type effectiveness is not modeled.** The rating scores against a fixed
   reference defender (180). Ratings are comparable to each other, not
   calibrated to any real matchup.
@@ -140,7 +155,10 @@ The items below are still open *elsewhere* and are kept so they don't get lost.
 
 1. Point the API at `db.py` instead of the in-memory `STATE` dict. The schema
    and its tests already exist and are already scoped by `trainer_id`.
-2. Calibrate `BarLayout` against a real Appraise screenshot.
+2. Name and CP OCR against real frames. The bars now read correctly from a real
+   capture, but nothing else on the screen has ever been run through OCR on
+   real pixels — only synthetic images. That is the next thing that will be
+   wrong in a way the tests cannot see.
 3. Grid tile geometry — the grid is regular, so slice deterministically from a
    calibrated pitch and origin rather than detecting contours.
 4. Scroll tracking: phase-correlate consecutive frames, accumulate global Y,

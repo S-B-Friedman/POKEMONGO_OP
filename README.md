@@ -200,9 +200,23 @@ python ocr_ingest.py --images shots/ --calibrate   # check bar crops first
 
 Parsing is separated from image I/O on purpose. `pogo_opt/ingest.py` is pure —
 strings and numbers in, records out — so it's unit-tested without Vision
-credentials, Tesseract, or a phone. The appraisal-bar regions are expressed as
-fractions of image size rather than pixel rows, so a screenshot from any device
-works; `--calibrate` dumps the crops to check them against a real screenshot.
+credentials, Tesseract, or a phone. `--calibrate` dumps the crops to check them
+against a real screenshot.
+
+The appraisal bars are found in the image rather than assumed: `detect_bars()`
+looks for three similar-width segments sharing a left edge, so it does not
+depend on the device or resolution. `BarLayout`'s fractions are only the
+fallback. Two details that are easy to get wrong and produce a confident wrong
+answer rather than an error:
+
+- **The bar is three segments with gaps**, so fill must be measured against the
+  summed segment widths. Counting the gaps biases every reading downward.
+- **A maxed stat is drawn red, not orange.** An orange-only reader scores a
+  perfect stat as zero.
+
+Calibrated against a real 1206×2622 capture, where the extracted IVs reproduced
+both the displayed CP and the displayed HP at exactly one level for each test
+subject. That double agreement is the check worth repeating on a new device.
 
 Reads that fail are flagged, not dropped. `iv_confidence` reports how close each
 bar landed to a legal IV — a value near 0.5 means the crop region is wrong
