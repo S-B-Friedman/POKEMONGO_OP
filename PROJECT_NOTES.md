@@ -9,16 +9,19 @@ exists for the things that are expensive to reconstruct from code alone.
 
 | Component | State | Verified how |
 |---|---|---|
-| Optimizer | Done | 150 tests; beats greedy at all 7 benchmark budgets |
+| Optimizer | Done | 262 tests; beats greedy at all 7 benchmark budgets |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
+| Cost tables | Done | Diffed against GAME_MASTER across all 49 levels |
 | Level solver | Done | Round-trips exactly across levels and IV spreads |
 | Frame voting | Done | Survives corrupted frames in synthetic runs |
-| SQLite schema | Done | 23 tests: scoping, cascades, constraints |
+| SQLite schema | Done, **not wired** | 23 tests: scoping, cascades, constraints |
 | Parsing layer | Done | 21 tests, no images or API keys needed |
+| Reference data | Done | 1,486 species / 384 moves from GAME_MASTER |
+| Poke Genie import | Done | Round-trips level ranges against recomputed CP |
+| HTTP API | Done, in-memory | Swap `STATE` for `db.py` next |
 | Bar crop geometry | **Estimated** | Synthetic screenshot only — needs a real one |
 | Grid tile geometry | **Not built** | Needs a real grid screenshot |
 | Scroll tracking | **Not built** | Needs a real swipe video |
-| `POGOR.sql` | **Never read** | — |
 
 ---
 
@@ -63,10 +66,10 @@ to *spend on*, which is a question about improvement per unit cost.
 
 ## Caveats and open questions
 
-- **XL candy boundary is level 41.0.** This is the one number I'd re-verify
-  against GameMaster. Evidence for 41.0: XL amounts restart at 10/12/15/17/20,
-  and putting the boundary at 40.0 would start XL at 15 and break that
-  progression. An earlier revision had this wrong at 40.0.
+- **XL candy boundary is level 40.0**, verified against GameMaster's
+  `xlCandyMinPokemonLevel` (see `scripts/build_reference.py --check-costs`).
+  A prior revision had this at 41.0 — plausible since XL amounts restart
+  their own 10/12/15/17/20 progression, but the ladder sat one level high.
 - **`BarLayout` fractions are estimates.** They work on a synthetic screenshot
   built to match them, which proves the machinery, not the numbers. Reading the
   wrong pixel rows produces confidently wrong IVs — worse than no IVs.
@@ -77,34 +80,65 @@ to *spend on*, which is a question about improvement per unit cost.
   multi-period; spending early compounds differently than spending late.
 - **Mega energy is not modeled**, which is why the mega cap is off by default.
 - **Poke Genie and Calcy IV already do screenshot IV scanning.** The
-  differentiator here is the allocation solver, not the OCR.
+  differentiator here is the allocation solver, not the OCR. This is also why
+  the Poke Genie CSV importer exists: reusing their scan output is cheaper than
+  competing with it.
+- **`benchmark.py`'s greedy baseline still uses one candy pool.** It charges
+  regular and XL candy against the same stock
+  (`candy_left[sid] -= max(candy, xl)`, line 60) — the same defect that was
+  fixed in the solver. Until that's corrected the baseline is handicapped by a
+  bug the solver does not have, so the published margin flatters the solver.
+  Fix it and re-run the table before quoting those numbers anywhere.
+- **The shadow surcharge flag is weakly grounded.** GAME_MASTER still carries
+  `shadowStardustMultiplier: 1.2` and `shadowCandyMultiplier: 1.2`. That does
+  not prove the client applies them — the fields may be vestigial — but it is
+  thinner support for `SHADOW_COST_SURCHARGE = False` than "Niantic removed it"
+  implies. Worth one in-game check.
+- **A few sample_data move stats were hand-entered and are wrong.** GAME_MASTER
+  gives Dragon Tail 14 power / 1.0s / 8 energy; `sample_data/collection.csv`
+  says 13 / 1.1s / 9. Anything loaded through `reference.py` is correct; the
+  bundled CSV is the stale copy.
 
 ---
 
 ## Security items outstanding
 
-- Rotate the MySQL root password — it was hardcoded in the public repo, so
-  treat it as compromised regardless. Deleting the line is not enough; it's in
-  the git history.
+**These refer to the earlier repo, not this one.** This repository's full
+working tree and all of its history were scanned: no credentials, no
+`POGOR.sql`, no service-account paths. Credentials here come from the
+environment only (`POGO_DB_*`, see `.env.example`), and `.env` is gitignored.
+The items below are still open *elsewhere* and are kept so they don't get lost.
+
+- Rotate the MySQL root password — it was hardcoded in the earlier public repo,
+  so treat it as compromised regardless. Deleting the line is not enough; it is
+  in that repo's history, which is why this one was started fresh rather than
+  filtered.
 - Delete the GCP service account key in project `axial-entity-398308`. The key
   contents were never committed, but the path was, and the key was sitting in
   Downloads.
-- Read `POGOR.sql` before pushing — last unreviewed file, and schema dumps
-  sometimes carry `GRANT` statements or seed credentials.
-- Check the 3 open GitHub Issues.
-- Force-push clean history (or delete and re-push fresh).
+- Read `POGOR.sql` before publishing it anywhere — schema dumps sometimes carry
+  `GRANT` statements or seed credentials. It has never been added here.
+- Check the 3 open GitHub Issues on the old repo.
 
 ---
 
 ## Next up
 
-1. Calibrate `BarLayout` against a real Appraise screenshot.
-2. Grid tile geometry — the grid is regular, so slice deterministically from a
+1. Fix the greedy baseline's single candy pool in `benchmark.py` and re-run the
+   table. It is the cheapest item here and it affects a number already
+   published in the README.
+2. Point the API at `db.py` instead of the in-memory `STATE` dict. The schema
+   and its tests already exist and are already scoped by `trainer_id`.
+3. Calibrate `BarLayout` against a real Appraise screenshot.
+4. Grid tile geometry — the grid is regular, so slice deterministically from a
    calibrated pitch and origin rather than detecting contours.
-3. Scroll tracking: phase-correlate consecutive frames, accumulate global Y,
+5. Scroll tracking: phase-correlate consecutive frames, accumulate global Y,
    assign each tile a global (row, col). Every slot is exactly one Pokémon,
    which is how duplicates collapse correctly even with two same-species
    same-CP Pokémon.
-4. Wire `ocr_ingest.py` to write into SQLite instead of CSV.
-5. Later: type effectiveness as a coverage portfolio; dual values to surface
-   which constraint is actually binding.
+6. Wire `ocr_ingest.py` to write into SQLite instead of CSV.
+7. Later: type effectiveness as a coverage portfolio.
+
+Done since this list was last written: dual values to surface which constraint
+is actually binding (`Result.shadow_prices`), and committed GAME_MASTER
+reference data with a `--check-costs` guard against silent drift.

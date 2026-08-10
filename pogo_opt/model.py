@@ -170,10 +170,48 @@ class Result:
     total_gain: float
     stardust_used: int
     stardust_budget: int
+    shadow_prices: dict[str, float] | None = None
 
     @property
     def feasible(self) -> bool:
         return self.status == "Optimal"
+
+
+def shadow_prices(prob: pulp.LpProblem) -> dict[str, float]:
+    """Dual value per resource constraint, from the LP relaxation.
+
+    Re-solves with every binary relaxed to [0, 1]: an integer program has no
+    duals, so asking CBC for `.pi` after a MIP solve gives None. The relaxation's
+    duals are an approximation -- they answer "what would one more unit of this
+    resource have been worth if the plan could be fractional" -- but that is
+    still the question worth surfacing, and it is the only version of it that
+    is cheap to compute.
+
+    Reported per unit of resource, so stardust prices are tiny by construction
+    (gain per single stardust) while candy prices are large. Compare a resource
+    against itself over time, not against a different resource.
+    """
+    relaxed = prob.copy()
+    for var in relaxed.variables():
+        # Note: PuLP does NOT keep cat == "Binary". A variable declared binary
+        # is stored as LpInteger with bounds [0, 1], so testing against
+        # LpBinary here silently matches nothing and every dual comes back
+        # empty -- which looks exactly like "no constraint is binding".
+        if var.cat == pulp.LpInteger:
+            var.cat = pulp.LpContinuous
+            if var.lowBound is None:
+                var.lowBound = 0
+    relaxed.solve(pulp.PULP_CBC_CMD(msg=0))
+    if pulp.LpStatus[relaxed.status] != "Optimal":
+        return {}
+    out = {}
+    for name, con in relaxed.constraints.items():
+        if name.startswith("One_Target_"):
+            continue   # not a resource; its dual is not actionable
+        pi = con.pi
+        if pi is not None and abs(pi) > 1e-12:
+            out[name] = float(pi)
+    return dict(sorted(out.items(), key=lambda kv: -abs(kv[1])))
 
 
 def _candidate_levels(current: float, max_steps: int) -> list[float]:
@@ -197,6 +235,7 @@ def build_and_solve(
     max_pokemon: int | None = None,
     weights: Weights | None = None,
     verbose: bool = False,
+    with_shadow_prices: bool = False,
 ) -> Result:
     """Solve the power-up allocation problem."""
     if not collection:
@@ -323,4 +362,5 @@ def build_and_solve(
         total_gain=sum(s.gain for s in selections),
         stardust_used=sum(s.stardust for s in selections),
         stardust_budget=stardust_budget,
+        shadow_prices=shadow_prices(prob) if with_shadow_prices else None,
     )

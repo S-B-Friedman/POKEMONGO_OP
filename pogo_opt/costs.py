@@ -93,23 +93,20 @@ _CANDY_TIERS: list[tuple[float, float, int]] = [
     (33.0, 34.5, 8),
     (35.0, 36.5, 10),
     (37.0, 38.5, 12),
-    (39.0, 40.5, 15),
-    # XL candy from here -- amounts restart their own progression.
-    (41.0, 42.5, 10),
-    (43.0, 44.5, 12),
-    (45.0, 46.5, 15),
-    (47.0, 48.5, 17),
-    (49.0, 49.5, 20),
+    (39.0, 39.5, 15),
+    # XL candy from level 40. Amounts restart their own progression, which is
+    # what made 41.0 a plausible guess -- but GAME_MASTER pins the first XL
+    # tier to levels 40-41, not 41-42, so the whole ladder sat one level high.
+    (40.0, 41.5, 10),
+    (42.0, 43.5, 12),
+    (44.0, 45.5, 15),
+    (46.0, 47.5, 17),
+    (48.0, 49.5, 20),
 ]
 
-# Power-ups taken FROM level 41.0 onward are paid in XL Candy; 39.0-40.5 still
-# costs 15 regular candy. The XL amounts restarting at 10 (rather than
-# continuing past 15) is what makes 41.0 the boundary.
-#
-# CAVEAT: this specific boundary is the one number in this file I would verify
-# against GameMaster before trusting. An earlier revision set it to 40.0, which
-# made the 40.0 -> 40.5 step cost 15 XL and broke the XL progression.
-XL_CANDY_THRESHOLD = 41.0
+# POKEMON_UPGRADE_SETTINGS.xlCandyMinPokemonLevel. Verified by
+# `python scripts/build_reference.py --check-costs`, which is also a test.
+XL_CANDY_THRESHOLD = 40.0
 
 # Niantic removed the Shadow power-up cost surcharge; see step_cost().
 SHADOW_COST_SURCHARGE = False
