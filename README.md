@@ -316,23 +316,40 @@ usually where the interesting conversation is:
   properly means a second coupled budget.
 - **Second charge moves, best-buddy, and move rerolls**, all of which consume
   the same stardust and belong in the same budget.
+- **Purification cost.** Converting a shadow costs stardust and candy that are
+  not in the budget, so an already-purified Pokémon looks retroactively free.
+  Left out deliberately — the conversion is rare in practice.
+- **The shadow surcharge is a judgement, not a measurement.** Shadow power-ups
+  are charged 20% more on both resources, on the strength of GAME_MASTER's
+  `shadowStardustMultiplier: 1.2` and `shadowCandyMultiplier: 1.2`. Whether the
+  client still applies those is not something the data settles. `costs.py` keeps
+  it behind `SHADOW_COST_SURCHARGE` so it is one line to revert.
 - **Time.** This is a single-period allocation. Stardust accrues daily, so the
   real problem is multi-period, and spending early compounds differently than
   spending late.
-- **CPM provenance.** `costs.py` carries the full published table for levels
-  1-50 and derives half-levels the way the game does: the quadratic mean
-  `sqrt((CPM(n)^2 + CPM(n+1)^2)/2)` below 40, arithmetic above 40 where the
-  curve goes linear. Validated indirectly — `combat_power()` reproduces the
-  published CP of five known perfect-IV Pokémon at level 40 exactly, which only
-  works if the CPM table and the stat formulas are both right.
-- **The XL candy boundary is level 40.0**, verified against GameMaster's
-  `xlCandyMinPokemonLevel` (see `scripts/build_reference.py --check-costs`).
-  An earlier revision had this at 41.0, which looked plausible because XL
-  amounts restart their own 10/12/15/17/20 progression — but the whole ladder
-  sat one level high.
-
 Because type effectiveness is absent, `--bulk` and the collector weights are the
 only tuning available.
+
+## Where the numbers come from
+
+The cost tables are diffed against GAME_MASTER across all 49 levels by the test
+suite, reading the committed `reference.json` so it runs offline. That check is
+not decoration — it is what caught the XL candy boundary sitting a level high,
+at 41.0 instead of 40.0. The tests that missed it asserted the repo's own belief
+rather than comparing it against anything.
+
+**CPM.** `costs.py` carries the published table for levels 1–50 and derives
+half-levels the way the game does: the quadratic mean
+`sqrt((CPM(n)² + CPM(n+1)²)/2)` below 40, arithmetic above 40 where the curve
+goes linear. Validated indirectly — `combat_power()` reproduces the published CP
+of five known perfect-IV Pokémon at level 40 exactly, which only works if the
+CPM table and the stat formulas are both right.
+
+**Independently**, the appraisal-bar work checked the same machinery from the
+other end: IVs read off a real screenshot reproduced both the displayed CP and
+the displayed HP at exactly one level, twice. Two observations converging on a
+single level exercises the CPM table, the stat formulas and the bar reading at
+once.
 
 ## Layout
 
@@ -349,11 +366,15 @@ pogo_opt/
   reference.py                species/move lookup with normalized matching
   data/reference.json         committed GAME_MASTER extract
   importers/pokegenie.py      Poke Genie CSV -> PokemonInstance
-  ingest.py                   pure screenshot parsing
+  ingest.py                   pure screenshot parsing, appraisal bar maths
   resolve.py                  CP + HP -> exact level
   db.py, schema.sql           SQLite layer, scoped by trainer_id (not yet wired)
 
-scripts/build_reference.py    GAME_MASTER -> reference.json; --check-costs
+scripts/
+  build_reference.py          GAME_MASTER -> reference.json; --check-costs
+  rebuild_sample_data.py      regenerate sample stat columns; --check
 sample_data/                  runnable example collection
-tests/                        262 tests: mechanics, solver, parsing, import, DB
+tests/                        290 tests: mechanics, solver, parsing, import,
+                              DB, appraisal bars, image path
+.github/workflows/tests.yml   CI: suite + entry points on 3.11 and 3.12
 ```
