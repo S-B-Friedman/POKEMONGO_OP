@@ -24,14 +24,14 @@ No database required.
 ```
 Pokemon     From    To     Stardust  Candy   XL     Gain
 --------------------------------------------------------
-Blastoise   22.5 ->  24.5     13,500     12    0     27.9
-Gengar      29.0 ->  31.0     20,000     16    0     17.4
-Tyranitar   32.5 ->  33.5     13,000      8    0     13.9
-Togekiss    27.0 ->  28.5     13,500     12    0     10.6
-Dragonite   15.0 ->  18.0     12,000     12    0      8.3
-Metagross*   18.5 ->  21.5      7,600     17    0      7.7
+Blastoise   22.5 ->  24.5     13,500     12    0     26.5
+Gengar      29.0 ->  31.0     20,000     16    0     21.4
+Dragonite   15.0 ->  18.0     12,000     12    0     19.2
+Lucario     28.5 ->  31.0     24,500     20    0     19.1
+Blissey     26.0 ->  27.5     12,500     12    0     18.4
+Metagross*   18.5 ->  21.5      7,600     13    0     13.5
 ...
-9 Pokemon | stardust 99,100 / 100,000 (900 unspent) | total gain 95.4
+9 Pokemon | stardust 99,350 / 100,000 (650 unspent) | total gain 129.2
 * lucky (half stardust) or purified (10% off)
 ```
 
@@ -103,22 +103,28 @@ and take from the top?" `benchmark.py` answers it against exactly that greedy
 baseline:
 
 ```
-    Budget    Greedy    Solver    Delta       %
-    10,000       9.3      13.6     4.26  45.64%
-    25,000      37.3      42.6     5.31  14.24%
-    50,000      58.8      65.9     7.11  12.10%
-   100,000      88.7     102.6    13.92  15.70%
-   200,000     113.2     143.5    30.25  26.71%
-   400,000     124.3     190.2    65.85  52.97%
-   800,000     124.3     222.9    98.57  79.29%
+    Budget    Greedy    Solver    Delta       %     G dust    S dust
+    10,000      19.6      20.9     1.31   6.70%      9,800     9,300
+    25,000      50.8      50.8     0.00   0.00%     24,800    24,800
+    50,000      75.7      84.4     8.68  11.47%     46,550    49,700
+   100,000     124.0     129.2     5.14   4.15%     99,050    99,350
+   200,000     167.0     187.8    20.76  12.43%    196,550   199,600
+   400,000     184.2     240.6    56.37  30.60%    323,550   399,100
+   800,000     184.2     273.8    89.59  48.63%    323,550   786,100
 ```
 
-Greedy now loses at every budget tested (correcting the candy table made the second resource bind harder). It fails in two ways. It
-commits stardust to a high-efficiency small step and then cannot afford the
-larger step on the same Pokémon that would have been worth more. And it
-plateaus — past ~242,000 stardust it cannot deploy additional budget at all,
-because every Pokémon is already locked to a small upgrade. The solver keeps
-finding uses for the marginal dust.
+The solver is strictly better at six of seven budgets and never worse. **At
+25,000 it ties** — greedy finds the optimum there, and that is worth stating
+rather than rounding away, because it marks where the extra machinery starts
+earning its keep. Below that, the collection is small enough relative to the
+budget that ranking is very nearly sufficient.
+
+Greedy fails in two ways. It commits stardust to a high-efficiency small step
+and then cannot afford the larger step on the same Pokémon that would have been
+worth more. And it plateaus — past ~323,550 stardust it cannot deploy
+additional budget at all, because every Pokémon is already locked to a small
+upgrade. The solver keeps finding uses for the marginal dust, which is where
+the gap widens to 49%.
 
 Run it yourself:
 
@@ -136,6 +142,18 @@ which you used.
 **CSV** (default) — a flat pre-joined `sample_data/collection.csv`, plus an
 optional `candy_inventory.csv`. This is what makes the repo runnable by someone
 who is not me.
+
+Because it is pre-joined it is a cache, and a cache with no way to rebuild it
+goes stale silently — which it had. Its stat columns are now generated from
+`reference.json`:
+
+```bash
+python scripts/rebuild_sample_data.py           # regenerate stat columns
+python scripts/rebuild_sample_data.py --check   # exit 1 if it has drifted
+```
+
+The roster — which Pokémon, at what level, with which IVs and moves — is
+curated and untouched by that script.
 
 **Poke Genie export** — the shortest path from a real collection on your phone
 to a solved plan. Poke Genie's Scan Pro tier exports scan history as CSV, with

@@ -37,6 +37,11 @@ jobs:
       # reference.json rather than the network -- see
       # tests/test_reference_and_import.py. These two just confirm the
       # entry points still work end to end.
+      # sample_data is pre-joined from reference.json. It had drifted badly
+      # before this was checked; offline, so it is safe to gate on.
+      - name: Sample data matches reference
+        run: python scripts/rebuild_sample_data.py --check
+
       - name: Solver runs
         run: python run.py
 

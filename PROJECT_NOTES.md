@@ -99,10 +99,19 @@ to *spend on*, which is a question about improvement per unit cost.
   not prove the client applies them — the fields may be vestigial — but it is
   thinner support for `SHADOW_COST_SURCHARGE = False` than "Niantic removed it"
   implies. Worth one in-game check.
-- **A few sample_data move stats were hand-entered and are wrong.** GAME_MASTER
-  gives Dragon Tail 14 power / 1.0s / 8 energy; `sample_data/collection.csv`
-  says 13 / 1.1s / 9. Anything loaded through `reference.py` is correct; the
-  bundled CSV is the stale copy.
+- **sample_data was substantially wrong, and is now generated.** Not "a few
+  stats": 24 distinct moves disagreed with GAME_MASTER (Counter 8/0.9/7 against
+  a real 13/1.0/9, Stone Edge at half its true energy cost), plus four base
+  stamina values, plus **two rows that were physically short one field** — so
+  every column after the omission was read one position left. That is why
+  Gardevoir carried `type2 == "0"` and silently lost its Psychic typing.
+  Nothing validated row width, so it never surfaced.
+
+  `scripts/rebuild_sample_data.py` now generates the stat columns from
+  `reference.json` and `--check` fails on drift. **Correcting it moved every
+  published figure**, including the benchmark table: the solver now ties greedy
+  at the 25,000 budget instead of winning outright. The old numbers were
+  computed from bad inputs, so they were never the solver's real margin.
 
 ---
 
