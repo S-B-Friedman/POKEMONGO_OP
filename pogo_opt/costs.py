@@ -108,8 +108,17 @@ _CANDY_TIERS: list[tuple[float, float, int]] = [
 # `python scripts/build_reference.py --check-costs`, which is also a test.
 XL_CANDY_THRESHOLD = 40.0
 
-# Niantic removed the Shadow power-up cost surcharge; see step_cost().
-SHADOW_COST_SURCHARGE = False
+# Shadow power-ups cost 20% more stardust and candy; see step_cost().
+#
+# GAME_MASTER carries `shadowStardustMultiplier: 1.2` and
+# `shadowCandyMultiplier: 1.2`. This was previously off on the belief that
+# Niantic had removed the surcharge and the fields were vestigial. Turned on as
+# a deliberate call: the authoritative data says the multipliers exist, and the
+# asymmetry of being wrong favours it. Charging a surcharge that no longer
+# applies makes the plan slightly conservative about shadows; omitting one that
+# does apply underprices every shadow by 20% on both resources and lets the
+# solver overcommit to them.
+SHADOW_COST_SURCHARGE = True
 
 
 def _candy_for(level: float) -> int:
@@ -143,12 +152,11 @@ def step_cost(level: float, friendship: str = "normal") -> tuple[int, int, int]:
     dust = _STARDUST_BRACKETS[i]
     candy = _candy_for(level)
 
-    # Lucky halves stardust; purified is 10% off both.
+    # Lucky halves stardust; purified is 10% off both; shadow adds 20% to both.
     #
-    # SHADOW: Niantic removed the Shadow power-up surcharge (it was 1.2x on both
-    # stardust and candy). Kept as a flag rather than deleted because anyone
-    # reproducing older numbers will want it, but it defaults OFF because that
-    # matches the current game. Set SHADOW_COST_SURCHARGE = True to restore.
+    # The shadow surcharge stays behind a flag rather than being inlined, so
+    # anyone reproducing numbers from the period when it was believed removed
+    # can set SHADOW_COST_SURCHARGE = False and get them back.
     multipliers = {
         "normal": (1.0, 1.0),
         "lucky": (0.5, 1.0),

@@ -29,11 +29,17 @@ Gengar      29.0 ->  31.0     20,000     16    0     21.4
 Dragonite   15.0 ->  18.0     12,000     12    0     19.2
 Lucario     28.5 ->  31.0     24,500     20    0     19.1
 Blissey     26.0 ->  27.5     12,500     12    0     18.4
-Metagross*   18.5 ->  21.5      7,600     13    0     13.5
+MetagrossL   18.5 ->  21.5      7,600     13    0     13.5
 ...
-9 Pokemon | stardust 99,350 / 100,000 (650 unspent) | total gain 129.2
-* lucky (half stardust) or purified (10% off)
+TyranitarS   20.0 ->  20.5      3,000      3    0      1.7
+--------------------------------------------------------
+9 Pokemon | stardust 99,850 / 100,000 (150 unspent) | total gain 129.2
+L lucky (half stardust)  S shadow (20% surcharge)
 ```
+
+The marker names the state rather than just flagging it, because they do not
+pull the same way: lucky and purified make a power-up cheaper, shadow makes it
+dearer.
 
 Above level 40 the candy cost switches to XL Candy, tracked as its own budget:
 
@@ -106,11 +112,11 @@ baseline:
     Budget    Greedy    Solver    Delta       %     G dust    S dust
     10,000      19.6      20.9     1.31   6.70%      9,800     9,300
     25,000      50.8      50.8     0.00   0.00%     24,800    24,800
-    50,000      75.7      84.4     8.68  11.47%     46,550    49,700
-   100,000     124.0     129.2     5.14   4.15%     99,050    99,350
-   200,000     167.0     187.8    20.76  12.43%    196,550   199,600
-   400,000     184.2     240.6    56.37  30.60%    323,550   399,100
-   800,000     184.2     273.8    89.59  48.63%    323,550   786,100
+    50,000      76.4      84.4     8.01  10.49%     48,050    49,700
+   100,000     124.0     129.2     5.14   4.15%     99,050    99,850
+   200,000     167.0     186.3    19.28  11.55%    199,450   199,300
+   400,000     184.2     239.4    55.22  29.98%    326,450   399,100
+   800,000     184.2     273.8    89.59  48.63%    326,450   794,500
 ```
 
 The solver is strictly better at six of seven budgets and never worse. **At

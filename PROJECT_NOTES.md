@@ -109,11 +109,22 @@ to *spend on*, which is a question about improvement per unit cost.
   high level — hence
   `test_greedy_baseline_tracks_xl_candy_separately`, which constructs the
   binding case rather than trusting the bundled sample.
-- **The shadow surcharge flag is weakly grounded.** GAME_MASTER still carries
-  `shadowStardustMultiplier: 1.2` and `shadowCandyMultiplier: 1.2`. That does
-  not prove the client applies them — the fields may be vestigial — but it is
-  thinner support for `SHADOW_COST_SURCHARGE = False` than "Niantic removed it"
-  implies. Worth one in-game check.
+- **Shadow power-ups now cost 20% more** (`SHADOW_COST_SURCHARGE = True`).
+  GAME_MASTER carries `shadowStardustMultiplier: 1.2` and
+  `shadowCandyMultiplier: 1.2`; this was previously off on the belief that
+  Niantic had removed the surcharge and left the fields vestigial. Turned on as
+  a judgement call, not a measurement — the authoritative data says the
+  multipliers exist, and the two errors are not symmetric. Charging a surcharge
+  that no longer applies just makes the plan mildly conservative about shadows;
+  omitting one that does apply underprices every shadow by 20% on *both*
+  resources and lets the solver overcommit. Still worth one in-game
+  confirmation: compare a shadow's Power Up cost against a non-shadow at the
+  same level.
+
+- **Purification cost is deliberately not modelled.** Converting a shadow costs
+  stardust and candy of its own, and none of it is in the budget. Judged not
+  worth modelling because the conversion is rare in practice; note that this
+  makes any purified Pokémon in a collection look retroactively free.
 - **sample_data was substantially wrong, and is now generated.** Not "a few
   stats": 24 distinct moves disagreed with GAME_MASTER (Counter 8/0.9/7 against
   a real 13/1.0/9, Stone Edge at half its true energy cost), plus four base
