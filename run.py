@@ -82,12 +82,13 @@ def main(argv=None) -> int:
     print("-" * len(header))
 
     for s in result.selections:
-        tag = ""
-        if s.pokemon.is_lucky:
-            tag = "L"
-        elif s.pokemon.is_shadow:
-            tag = "S"
-        label = f"{s.pokemon.name}{'*' if tag else ''}"
+        # The marker names the state, because they do not pull the same way:
+        # lucky and purified make a power-up cheaper, shadow makes it dearer.
+        # A single "*" for all three said only "this one is unusual".
+        tag = {"lucky": "L", "shadow": "S", "purified": "P"}.get(
+            s.pokemon.friendship, ""
+        )
+        label = f"{s.pokemon.name}{tag}"
         print(
             f"{label:<{name_w}}  {s.pokemon.level:>5} ->  {s.target_level:<5} "
             f"{s.stardust:>9,} {s.candy:>6} {s.xl_candy:>4} {s.gain:>8.1f}"
@@ -98,8 +99,14 @@ def main(argv=None) -> int:
     print(f"{len(result.selections)} Pokemon | "
           f"stardust {result.stardust_used:,} / {result.stardust_budget:,} "
           f"({leftover:,} unspent) | total gain {result.total_gain:.1f}")
-    if any(s.pokemon.is_lucky or s.pokemon.is_shadow for s in result.selections):
-        print("* lucky (half stardust) or purified (10% off)")
+    states = {s.pokemon.friendship for s in result.selections} - {"normal"}
+    if states:
+        legend = {
+            "lucky": "L lucky (half stardust)",
+            "purified": "P purified (10% off)",
+            "shadow": "S shadow (20% surcharge)",
+        }
+        print("  ".join(legend[s] for s in ("lucky", "purified", "shadow") if s in states))
     return 0
 
 

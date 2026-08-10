@@ -383,11 +383,24 @@ def test_cp_rises_with_level_and_never_below_ten():
     assert cps[0] >= 10
 
 
-def test_shadow_no_longer_pays_a_power_up_surcharge():
-    """Niantic removed it; the flag exists for reproducing older numbers."""
+def test_shadow_pays_a_power_up_surcharge():
+    """20% more stardust and candy, per GAME_MASTER's shadow multipliers."""
     from pogo_opt.costs import SHADOW_COST_SURCHARGE
-    assert SHADOW_COST_SURCHARGE is False
-    assert cumulative_cost(20.0, 25.0, "shadow")[0] == cumulative_cost(20.0, 25.0, "normal")[0]
+    assert SHADOW_COST_SURCHARGE is True
+
+    normal = cumulative_cost(20.0, 25.0, "normal")
+    shadow = cumulative_cost(20.0, 25.0, "shadow")
+    assert shadow[0] == pytest.approx(normal[0] * 1.2, rel=0.01)
+    # Candy is charged per step and rounded up, so the total lands at or above
+    # the scaled figure rather than exactly on it.
+    assert shadow[1] > normal[1]
+
+
+def test_shadow_is_the_most_expensive_friendship_state():
+    """Ordering that should hold at any level: lucky < purified < normal < shadow."""
+    dust = {s: cumulative_cost(20.0, 25.0, s)[0]
+            for s in ("lucky", "purified", "normal", "shadow")}
+    assert dust["lucky"] < dust["purified"] < dust["normal"] < dust["shadow"]
 
 
 # --------------------------------------------------------------------------
