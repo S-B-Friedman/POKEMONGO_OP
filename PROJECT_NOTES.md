@@ -9,16 +9,17 @@ exists for the things that are expensive to reconstruct from code alone.
 
 | Component | State | Verified how |
 |---|---|---|
-290 tests, run on 3.11 and 3.12 by CI on every push and pull request. 287 of
-them need nothing beyond `requirements-dev.txt`; the remaining 3 are the image
-path and need the OCR extras, which CI installs — a test that skips itself is
-not a test that passed. One more (`test_text_extraction`) needs the tesseract
-binary and may still skip.
+291 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 287 need nothing beyond `requirements-dev.txt`; the other 4 are
+the image path, needing OpenCV, Pillow and the tesseract binary, all of which
+CI installs. A test that skips itself is not a test that passed, and the
+summary line does not distinguish them — so the extras are installed rather
+than allowed to quietly disable coverage.
 
 | Component | State | Verified how |
 |---|---|---|
 | Optimizer | Done | 122 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
-| Image path | Done | 3 tests, synthetic screenshots painted like the real UI |
+| Image path | Done | 4 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
 | Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (69 tests) |
 | Level solver | Done | 26 tests; round-trips across levels and IV spreads |
@@ -30,7 +31,7 @@ binary and may still skip.
 | Poke Genie import | Done | Round-trips level ranges against recomputed CP |
 | HTTP API | Done, in-memory | Swap `STATE` for `db.py` next |
 | Appraisal bars | Calibrated | 23 tests; real capture, IVs reproduce CP **and** HP |
-| Screen text (name/CP) | **Synthetic only** | Never OCR'd from a real screenshot |
+| Screen text (name/CP) | **Synthetic only** | Real tesseract in CI, but never on a real screenshot |
 | Grid tile geometry | **Not built** | Needs a real grid screenshot |
 | Scroll tracking | **Not built** | Needs a real swipe video |
 

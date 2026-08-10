@@ -12,6 +12,7 @@ to look for the actual colours. A synthetic fixture that does not resemble its
 subject only tests itself.
 """
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -105,7 +106,14 @@ def test_ivs_round_trip_through_the_bars(screenshot):
 
 
 def test_text_extraction(screenshot):
+    # The precondition is the tesseract BINARY, not the Python wrapper. Guarding
+    # on `importorskip("pytesseract")` checks the wrong thing: the wrapper
+    # installs from requirements-ocr.txt on its own, so the test stops skipping
+    # and starts erroring with TesseractNotFoundError wherever the binary is
+    # absent. CI installs the binary; this keeps a bare checkout skipping.
     pytest.importorskip("pytesseract")
+    if shutil.which("tesseract") is None:
+        pytest.skip("tesseract binary not on PATH")
     from ocr_ingest import read_text
 
     rec = build_record(read_text(screenshot, "tesseract"), ["Charizard"])

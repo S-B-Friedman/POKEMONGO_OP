@@ -25,6 +25,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # pytesseract is only a wrapper; the OCR itself is this binary. Installed
+      # so test_text_extraction actually runs -- reading text off a screenshot
+      # is the part of the image path with no other coverage.
+      - name: Install tesseract
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr
+
       # The OCR extras are installed so tests/test_ocr_pipeline.py actually
       # runs. It skips itself when OpenCV and Pillow are missing, so leaving
       # them out meant the image path was silently untested in CI -- and a
