@@ -388,3 +388,55 @@ def test_shadow_no_longer_pays_a_power_up_surcharge():
     from pogo_opt.costs import SHADOW_COST_SURCHARGE
     assert SHADOW_COST_SURCHARGE is False
     assert cumulative_cost(20.0, 25.0, "shadow")[0] == cumulative_cost(20.0, 25.0, "normal")[0]
+
+
+# --------------------------------------------------------------------------
+# Benchmark baseline -- it must play by the same rules as the solver
+# --------------------------------------------------------------------------
+
+def test_greedy_baseline_tracks_xl_candy_separately():
+    """Regression: the greedy baseline charged XL against the regular stock.
+
+    A baseline handicapped by a defect the solver does not have would overstate
+    the solver's margin, so the comparison in benchmark.py is only meaningful
+    if both sides get two independent pools.
+
+    This is latent on sample_data -- there both stocks comfortably exceed the
+    requirement, so neither binds -- which is exactly why it needs a test that
+    constructs the binding case rather than relying on the bundled collection.
+    """
+    import benchmark
+
+    # Level 39.5 -> reaching 40.0+ costs XL candy. Plentiful regular candy,
+    # scarce XL: the old single-pool check compared XL against the 300 and let
+    # it through.
+    collection = [make("p1", species_id=6, level=39.5)]
+
+    _, _, picked = benchmark.greedy(
+        collection,
+        stardust_budget=2_000_000,
+        candy_inventory={6: 300},
+        xl_candy_inventory={6: 0},
+        max_steps=6,
+    )
+    for sel in build_and_solve(
+        collection,
+        stardust_budget=2_000_000,
+        candy_inventory={6: 300},
+        xl_candy_inventory={6: 0},
+        max_steps_per_pokemon=6,
+    ).selections:
+        assert sel.xl_candy == 0
+
+    # Whatever greedy picks, it must not have spent XL it does not have.
+    gain_with_xl, _, picked_with_xl = benchmark.greedy(
+        collection,
+        stardust_budget=2_000_000,
+        candy_inventory={6: 300},
+        xl_candy_inventory={6: 100},
+        max_steps=6,
+    )
+    assert picked_with_xl >= picked, (
+        "granting XL candy must not reduce what the baseline can afford"
+    )
+    assert gain_with_xl > 0

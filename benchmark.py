@@ -26,8 +26,16 @@ from pogo_opt.model import _candidate_levels  # noqa: PLC2701 - internal by desi
 HERE = Path(__file__).parent
 
 
-def greedy(collection, stardust_budget, candy_inventory, max_steps=6, w=None):
-    """Take the best gain-per-stardust candidate that still fits, repeatedly."""
+def greedy(collection, stardust_budget, candy_inventory, xl_candy_inventory,
+           max_steps=6, w=None):
+    """Take the best gain-per-stardust candidate that still fits, repeatedly.
+
+    Regular and XL candy are separate stocks, exactly as in the solver. An
+    earlier version charged both against `candy_inventory` -- which handicapped
+    the baseline with a defect the solver did not have, and so overstated the
+    solver's margin. A baseline is only worth reporting if it is allowed to
+    play by the same rules.
+    """
     w = w or Weights()
     candidates = []
     for p in collection:
@@ -42,6 +50,7 @@ def greedy(collection, stardust_budget, candy_inventory, max_steps=6, w=None):
 
     dust_left = stardust_budget
     candy_left = dict(candy_inventory)
+    xl_left = dict(xl_candy_inventory)
     used_instances: set[str] = set()
     total_gain = 0.0
     dust_used = 0
@@ -51,13 +60,19 @@ def greedy(collection, stardust_budget, candy_inventory, max_steps=6, w=None):
         if p.instance_id in used_instances or dust > dust_left:
             continue
         sid = p.species_id
-        if sid in candy_left and (candy > candy_left[sid] or xl > candy_left[sid]):
+        # Each resource binds only where its stock is known -- same rule the
+        # solver applies when it emits a constraint per species.
+        if sid in candy_left and candy > candy_left[sid]:
+            continue
+        if sid in xl_left and xl > xl_left[sid]:
             continue
         used_instances.add(p.instance_id)
         dust_left -= dust
         dust_used += dust
         if sid in candy_left:
-            candy_left[sid] -= max(candy, xl)
+            candy_left[sid] -= candy
+        if sid in xl_left:
+            xl_left[sid] -= xl
         total_gain += gain
         picked += 1
 
@@ -76,7 +91,7 @@ def main() -> int:
 
     wins = 0
     for b in budgets:
-        g_gain, g_dust, _ = greedy(collection, b, candy)
+        g_gain, g_dust, _ = greedy(collection, b, candy, xl_candy)
         res = build_and_solve(
             collection,
             stardust_budget=b,

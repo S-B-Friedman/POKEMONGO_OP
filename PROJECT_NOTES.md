@@ -83,21 +83,35 @@ to *spend on*, which is a question about improvement per unit cost.
   differentiator here is the allocation solver, not the OCR. This is also why
   the Poke Genie CSV importer exists: reusing their scan output is cheaper than
   competing with it.
-- **`benchmark.py`'s greedy baseline still uses one candy pool.** It charges
-  regular and XL candy against the same stock
-  (`candy_left[sid] -= max(candy, xl)`, line 60) — the same defect that was
-  fixed in the solver. Until that's corrected the baseline is handicapped by a
-  bug the solver does not have, so the published margin flatters the solver.
-  Fix it and re-run the table before quoting those numbers anywhere.
+- **`benchmark.py`'s greedy baseline used one candy pool — fixed, and it did
+  not move the numbers.** It charged regular and XL candy against the same
+  stock, the defect already fixed in the solver. The correction was real but
+  **latent on `sample_data`**: the only two Pokémon that can reach XL territory
+  are species 149 (120 candy / 42 XL) and 376 (75 / 38), and both stocks exceed
+  the 10-XL requirement, so neither pool ever binds. The published table is
+  unchanged and was accurate as printed. It would bite on any collection where
+  XL is scarce while regular candy is plentiful, which is the normal case at
+  high level — hence
+  `test_greedy_baseline_tracks_xl_candy_separately`, which constructs the
+  binding case rather than trusting the bundled sample.
 - **The shadow surcharge flag is weakly grounded.** GAME_MASTER still carries
   `shadowStardustMultiplier: 1.2` and `shadowCandyMultiplier: 1.2`. That does
   not prove the client applies them — the fields may be vestigial — but it is
   thinner support for `SHADOW_COST_SURCHARGE = False` than "Niantic removed it"
   implies. Worth one in-game check.
-- **A few sample_data move stats were hand-entered and are wrong.** GAME_MASTER
-  gives Dragon Tail 14 power / 1.0s / 8 energy; `sample_data/collection.csv`
-  says 13 / 1.1s / 9. Anything loaded through `reference.py` is correct; the
-  bundled CSV is the stale copy.
+- **sample_data was substantially wrong, and is now generated.** Not "a few
+  stats": 24 distinct moves disagreed with GAME_MASTER (Counter 8/0.9/7 against
+  a real 13/1.0/9, Stone Edge at half its true energy cost), plus four base
+  stamina values, plus **two rows that were physically short one field** — so
+  every column after the omission was read one position left. That is why
+  Gardevoir carried `type2 == "0"` and silently lost its Psychic typing.
+  Nothing validated row width, so it never surfaced.
+
+  `scripts/rebuild_sample_data.py` now generates the stat columns from
+  `reference.json` and `--check` fails on drift. **Correcting it moved every
+  published figure**, including the benchmark table: the solver now ties greedy
+  at the 25,000 budget instead of winning outright. The old numbers were
+  computed from bad inputs, so they were never the solver's real margin.
 
 ---
 
@@ -124,21 +138,19 @@ The items below are still open *elsewhere* and are kept so they don't get lost.
 
 ## Next up
 
-1. Fix the greedy baseline's single candy pool in `benchmark.py` and re-run the
-   table. It is the cheapest item here and it affects a number already
-   published in the README.
-2. Point the API at `db.py` instead of the in-memory `STATE` dict. The schema
+1. Point the API at `db.py` instead of the in-memory `STATE` dict. The schema
    and its tests already exist and are already scoped by `trainer_id`.
-3. Calibrate `BarLayout` against a real Appraise screenshot.
-4. Grid tile geometry — the grid is regular, so slice deterministically from a
+2. Calibrate `BarLayout` against a real Appraise screenshot.
+3. Grid tile geometry — the grid is regular, so slice deterministically from a
    calibrated pitch and origin rather than detecting contours.
-5. Scroll tracking: phase-correlate consecutive frames, accumulate global Y,
+4. Scroll tracking: phase-correlate consecutive frames, accumulate global Y,
    assign each tile a global (row, col). Every slot is exactly one Pokémon,
    which is how duplicates collapse correctly even with two same-species
    same-CP Pokémon.
-6. Wire `ocr_ingest.py` to write into SQLite instead of CSV.
-7. Later: type effectiveness as a coverage portfolio.
+5. Wire `ocr_ingest.py` to write into SQLite instead of CSV.
+6. Later: type effectiveness as a coverage portfolio.
 
 Done since this list was last written: dual values to surface which constraint
-is actually binding (`Result.shadow_prices`), and committed GAME_MASTER
-reference data with a `--check-costs` guard against silent drift.
+is actually binding (`Result.shadow_prices`), committed GAME_MASTER reference
+data with a `--check-costs` guard against silent drift, the greedy baseline's
+two-pool fix, and CI that runs the suite and the cost check on every push.

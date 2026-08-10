@@ -1,27 +1,27 @@
 instance_id,species_id,name,level,attack_iv,defense_iv,stamina_iv,base_attack,base_defense,base_stamina,fast_move,fast_power,fast_duration,fast_energy,fast_type,charge_move,charge_power,charge_duration,charge_energy,charge_type,type1,type2,is_shadow,is_lucky,is_purified
-p001,68,Machamp,30.0,15,14,15,234,159,207,Counter,8,0.9,7,fighting,Dynamic Punch,90,2.7,50,fighting,fighting,,0,0,0
-p002,68,Machamp,25.0,10,12,11,234,159,207,Counter,8,0.9,7,fighting,Dynamic Punch,90,2.7,50,fighting,fighting,,1,0,0
-p003,248,Tyranitar,32.5,15,15,15,251,207,225,Smack Down,12,1.2,8,rock,Stone Edge,100,2.3,50,rock,rock,dark,0,0,0
-p004,149,Dragonite,28.0,13,11,14,263,198,209,Dragon Tail,13,1.1,9,dragon,Outrage,110,3.9,50,dragon,dragon,flying,0,1,0
-p005,384,Rayquaza,35.0,14,15,13,284,170,191,Dragon Tail,13,1.1,9,dragon,Outrage,110,3.9,50,dragon,dragon,flying,0,0,0
-p006,282,Gardevoir,27.5,12,13,10,237,195,169,Charm,16,1.3,7,fairy,Dazzling Gleam,100,3.5,50,psychic,fairy,0,0,0
-p007,376,Metagross,33.0,15,15,14,257,228,190,Bullet Punch,9,1.2,10,steel,Meteor Mash,100,2.6,50,steel,steel,psychic,0,0,0
-p008,94,Gengar,29.0,11,9,12,261,149,155,Shadow Claw,9,0.7,6,ghost,Shadow Ball,100,3.0,50,ghost,poison,0,0,0
-p009,242,Blissey,26.0,14,15,15,129,169,496,Pound,7,0.5,6,normal,Dazzling Gleam,100,3.5,50,fairy,normal,,0,0,0
-p010,143,Snorlax,31.0,0,0,0,190,169,330,Lick,5,0.5,6,ghost,Body Slam,50,1.9,33,normal,normal,,0,0,0
-p011,6,Charizard,30.5,13,14,12,223,173,186,Fire Spin,14,1.1,10,fire,Blast Burn,110,3.3,50,fire,fire,flying,0,0,0
-p012,3,Venusaur,24.0,10,11,9,198,189,190,Vine Whip,7,0.6,6,grass,Frenzy Plant,100,2.6,50,grass,grass,poison,0,0,0
-p013,9,Blastoise,22.5,12,10,13,171,207,188,Water Gun,5,0.5,5,water,Hydro Cannon,90,1.9,50,water,water,,0,0,0
-p014,260,Swampert,34.0,15,13,15,208,175,225,Mud Shot,5,0.55,7,ground,Hydro Cannon,90,1.9,50,water,water,ground,0,0,0
-p015,373,Salamence,29.5,14,12,15,277,168,195,Dragon Tail,13,1.1,9,dragon,Outrage,110,3.9,50,dragon,dragon,flying,0,0,0
-p016,448,Lucario,28.5,15,15,15,236,144,172,Counter,8,0.9,7,fighting,Aura Sphere,100,1.9,50,fighting,fighting,steel,0,0,0
-p017,445,Garchomp,31.5,13,15,14,261,193,193,Mud Shot,5,0.55,7,ground,Outrage,110,3.9,50,dragon,dragon,ground,0,0,0
-p018,468,Togekiss,27.0,12,14,11,225,217,198,Charm,16,1.3,7,fairy,Dazzling Gleam,100,3.5,50,fairy,fairy,flying,0,0,0
-p019,464,Rhyperior,30.0,11,13,15,241,190,251,Mud Slap,18,1.4,12,ground,Rock Wrecker,110,2.5,50,rock,ground,rock,0,0,0
-p020,473,Mamoswine,26.5,14,11,13,247,146,242,Powder Snow,6,1.0,15,ice,Avalanche,90,2.7,50,ice,ice,ground,0,0,0
-p021,534,Conkeldurr,24.5,9,12,14,243,158,234,Counter,8,0.9,7,fighting,Dynamic Punch,90,2.7,50,fighting,fighting,,0,0,0
-p022,248,Tyranitar,20.0,8,9,10,251,207,225,Smack Down,12,1.2,8,rock,Stone Edge,100,2.3,50,rock,rock,dark,1,0,0
-p023,149,Dragonite,15.0,15,15,15,263,198,209,Dragon Tail,13,1.1,9,dragon,Outrage,110,3.9,50,dragon,dragon,flying,0,0,0
-p024,376,Metagross,18.5,7,8,6,257,228,190,Bullet Punch,9,1.2,10,steel,Meteor Mash,100,2.6,50,steel,steel,psychic,0,1,0
-p025,149,Dragonite,39.5,15,15,14,263,198,209,Dragon Breath,4,0.5,3,dragon,Draco Meteor,150,3.6,100,dragon,dragon,flying,0,0,0
-p026,376,Metagross,40.0,15,15,15,257,228,190,Bullet Punch,9,1.2,10,steel,Meteor Mash,100,2.6,50,steel,steel,psychic,0,0,0
+p001,68,Machamp,30.0,15,14,15,234,159,207,Counter,13,1.0,9,fighting,Dynamic Punch,85,2.5,50,fighting,fighting,,0,0,0
+p002,68,Machamp,25.0,10,12,11,234,159,207,Counter,13,1.0,9,fighting,Dynamic Punch,85,2.5,50,fighting,fighting,,1,0,0
+p003,248,Tyranitar,32.5,15,15,15,251,207,225,Smack Down,13,1.0,7,rock,Stone Edge,105,2.5,100,rock,rock,dark,0,0,0
+p004,149,Dragonite,28.0,13,11,14,263,198,209,Dragon Tail,14,1.0,8,dragon,Outrage,110,4.0,50,dragon,dragon,flying,0,1,0
+p005,384,Rayquaza,35.0,14,15,13,284,170,213,Dragon Tail,14,1.0,8,dragon,Outrage,110,4.0,50,dragon,dragon,flying,0,0,0
+p006,282,Gardevoir,27.5,12,13,10,237,195,169,Charm,20,1.5,11,fairy,Dazzling Gleam,100,3.5,50,fairy,psychic,fairy,0,0,0
+p007,376,Metagross,33.0,15,15,14,257,228,190,Bullet Punch,10,1.0,11,steel,Meteor Mash,100,2.5,50,steel,steel,psychic,0,0,0
+p008,94,Gengar,29.0,11,9,12,261,149,155,Shadow Claw,6,0.5,4,ghost,Shadow Ball,100,3.0,50,ghost,ghost,poison,0,0,0
+p009,242,Blissey,26.0,14,15,15,129,169,496,Pound,6,0.5,5,normal,Dazzling Gleam,100,3.5,50,fairy,normal,,0,0,0
+p010,143,Snorlax,31.0,0,0,0,190,169,330,Lick,5,0.5,6,ghost,Body Slam,50,2.0,33,normal,normal,,0,0,0
+p011,6,Charizard,30.5,13,14,12,223,173,186,Fire Spin,13,1.0,9,fire,Blast Burn,120,3.5,50,fire,fire,flying,0,0,0
+p012,3,Venusaur,24.0,10,11,9,198,189,190,Vine Whip,6,0.5,5,grass,Frenzy Plant,100,2.5,50,grass,grass,poison,0,0,0
+p013,9,Blastoise,22.5,12,10,13,171,207,188,Water Gun,5,0.5,5,water,Hydro Cannon,90,2.0,50,water,water,,0,0,0
+p014,260,Swampert,34.0,15,13,15,208,175,225,Mud Shot,4,0.5,6,ground,Hydro Cannon,90,2.0,50,water,water,ground,0,0,0
+p015,373,Salamence,29.5,14,12,15,277,168,216,Dragon Tail,14,1.0,8,dragon,Outrage,110,4.0,50,dragon,dragon,flying,0,0,0
+p016,448,Lucario,28.5,15,15,15,236,144,172,Counter,13,1.0,9,fighting,Aura Sphere,100,2.0,50,fighting,fighting,steel,0,0,0
+p017,445,Garchomp,31.5,13,15,14,261,193,239,Mud Shot,4,0.5,6,ground,Outrage,110,4.0,50,dragon,dragon,ground,0,0,0
+p018,468,Togekiss,27.0,12,14,11,225,217,198,Charm,20,1.5,11,fairy,Dazzling Gleam,100,3.5,50,fairy,fairy,flying,0,0,0
+p019,464,Rhyperior,30.0,11,13,15,241,190,251,Mud Slap,19,1.5,13,ground,Rock Wrecker,110,3.5,50,rock,ground,rock,0,0,0
+p020,473,Mamoswine,26.5,14,11,13,247,146,242,Powder Snow,6,1.0,15,ice,Avalanche,85,2.5,50,ice,ice,ground,0,0,0
+p021,534,Conkeldurr,24.5,9,12,14,243,158,233,Counter,13,1.0,9,fighting,Dynamic Punch,85,2.5,50,fighting,fighting,,0,0,0
+p022,248,Tyranitar,20.0,8,9,10,251,207,225,Smack Down,13,1.0,7,rock,Stone Edge,105,2.5,100,rock,rock,dark,1,0,0
+p023,149,Dragonite,15.0,15,15,15,263,198,209,Dragon Tail,14,1.0,8,dragon,Outrage,110,4.0,50,dragon,dragon,flying,0,0,0
+p024,376,Metagross,18.5,7,8,6,257,228,190,Bullet Punch,10,1.0,11,steel,Meteor Mash,100,2.5,50,steel,steel,psychic,0,1,0
+p025,149,Dragonite,39.5,15,15,14,263,198,209,Dragon Breath,6,0.5,4,dragon,Draco Meteor,150,3.5,100,dragon,dragon,flying,0,0,0
+p026,376,Metagross,40.0,15,15,15,257,228,190,Bullet Punch,10,1.0,11,steel,Meteor Mash,100,2.5,50,steel,steel,psychic,0,0,0
