@@ -26,7 +26,16 @@ import logging
 import sys
 from pathlib import Path
 
-from pogo_opt.ingest import BarLayout, ScannedPokemon, build_record
+from pogo_opt.ingest import (
+    IV_BAR_SEGMENTS,
+    BarLayout,
+    BarReading,
+    ScannedPokemon,
+    bar_reading,
+    build_record,
+    contiguous_runs,
+    find_bar_cluster,
+)
 
 log = logging.getLogger("ocr_ingest")
 
@@ -93,26 +102,148 @@ def read_text(image_path: Path, engine: str) -> str:
     return pytesseract.image_to_string(img, config="--psm 6")
 
 
-def read_bar_fills(image_path: Path, layout: BarLayout) -> dict[str, float]:
-    """Fraction of each appraisal bar that is filled."""
-    _require("cv2", "opencv-python-headless")
+# Appraisal bar colours, in OpenCV HSV (hue 0-179).
+#
+# A partially filled stat is orange. A MAXED stat is red -- the game recolours
+# the whole bar at 15/15. Detecting only orange therefore reads a perfect stat
+# as completely empty, which is the single worst error this code can make: it
+# turns the best Pokemon in a collection into the worst. Red wraps around the
+# hue origin, hence the two ranges.
+_ORANGE = ((5, 90, 90), (35, 255, 255))
+_RED_LOW = ((0, 90, 90), (4, 255, 255))
+_RED_HIGH = ((170, 90, 90), (179, 255, 255))
+
+# The unfilled remainder of the bar: desaturated mid-grey, distinct from the
+# near-white card behind it.
+_TRACK_MAX_SAT = 40
+_TRACK_VALUE = (195, 245)
+
+
+def _bar_masks(img):
+    """-> (fill_mask, track_mask) as bool arrays over the whole image."""
     import cv2
     import numpy as np
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    fill = cv2.inRange(hsv, *_ORANGE)
+    for lo, hi in (_RED_LOW, _RED_HIGH):
+        fill = cv2.bitwise_or(fill, cv2.inRange(hsv, lo, hi))
+
+    sat = hsv[:, :, 1]
+    val = img.mean(axis=2)
+    grey = (sat < _TRACK_MAX_SAT) & (val > _TRACK_VALUE[0]) & (val < _TRACK_VALUE[1])
+
+    fill_b = fill.astype(bool)
+    return fill_b, (fill_b | grey)
+
+
+def detect_bars(img, *, min_length: int = 20) -> dict[str, BarReading] | None:
+    """Find the three appraisal bars in an image and measure them.
+
+    Scans for scanlines that look like a three-segment bar and keeps the three
+    strongest, top to bottom. This is preferred over `BarLayout` because it does
+    not assume a device, a resolution, or where the card sits -- the fractions
+    are only a fallback for when this finds nothing.
+    """
+    fill_m, track_m = _bar_masks(img)
+    h = img.shape[0]
+
+    # (y, left_x, reading) for every scanline that looks like a segmented bar.
+    candidates: list[tuple[int, int, BarReading]] = []
+    for y in range(int(h * 0.30), h):
+        row_track = track_m[y]
+        if row_track.sum() < min_length * 3:
+            continue
+        runs = contiguous_runs(row_track.tolist(), min_length=min_length)
+        if len(runs) < IV_BAR_SEGMENTS:
+            continue
+        trio = find_bar_cluster(runs)
+        if trio is None:
+            continue
+        row_fill = fill_m[y]
+        total = sum(b - a + 1 for a, b in trio)
+        filled = sum(1 for a, b in trio for x in range(a, b + 1) if row_fill[x])
+        candidates.append((
+            y,
+            trio[0][0],
+            BarReading(ratio=min(1.0, filled / total), segments=len(trio),
+                       filled_px=filled, track_px=total),
+        ))
+
+    if not candidates:
+        return None
+
+    # Group adjacent scanlines sharing a left edge into one bar, then take the
+    # median row so a rounded end or a compression artefact cannot swing it.
+    groups: list[list[tuple[int, int, BarReading]]] = [[candidates[0]]]
+    for cand in candidates[1:]:
+        prev = groups[-1][-1]
+        if cand[0] - prev[0] <= 3 and abs(cand[1] - prev[1]) <= 15:
+            groups[-1].append(cand)
+        else:
+            groups.append([cand])
+
+    groups = [g for g in groups if len(g) >= 6]
+    if len(groups) < 3:
+        return None
+
+    # The three bars share a left edge and a track width. Anything that does not
+    # is some other part of the UI that happened to look striped.
+    groups.sort(key=lambda g: g[0][0])
+    best: list[list[tuple[int, int, BarReading]]] | None = None
+    for i in range(len(groups) - 2):
+        trio = groups[i:i + 3]
+        lefts = [g[len(g) // 2][1] for g in trio]
+        widths = [g[len(g) // 2][2].track_px for g in trio]
+        if max(lefts) - min(lefts) > 15:
+            continue
+        if max(widths) / max(1, min(widths)) > 1.10:
+            continue
+        best = trio
+        break
+
+    if best is None:
+        return None
+
+    return {
+        stat: g[len(g) // 2][2]
+        for stat, g in zip(("attack", "defense", "hp"), best)
+    }
+
+
+def read_bar_fills(
+    image_path: Path, layout: BarLayout, *, autodetect: bool = True
+) -> dict[str, float]:
+    """Fraction of each appraisal bar that is filled.
+
+    Measured against the bar's own segments, in colour. The previous version
+    thresholded greyscale and treated dark pixels as filled, which does not
+    describe this UI at all: the filled bar is mid-tone orange (grey ~158) and
+    the empty track is light grey (~230), so on a real screenshot it read text
+    and the team leader's outline instead of the bar.
+    """
+    _require("cv2", "opencv-python-headless")
+    import cv2
 
     img = cv2.imread(str(image_path))
     if img is None:
         raise RuntimeError(f"could not read image: {image_path}")
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, threshed = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+    if autodetect:
+        found = detect_bars(img)
+        if found:
+            return {stat: r.ratio for stat, r in found.items()}
+        log.warning("bar auto-detection failed; falling back to BarLayout fractions")
 
-    h, w = threshed.shape
+    fill_m, track_m = _bar_masks(img)
+    h, w = img.shape[:2]
     fills: dict[str, float] = {}
     for stat, (y0, y1, x0, x1) in layout.regions(h, w).items():
-        region = threshed[y0:y1, x0:x1]
-        if region.size == 0:
+        if y1 <= y0 or x1 <= x0 or y1 > h:
             continue
-        fills[stat] = float(np.count_nonzero(region) / region.size)
+        mid = min(h - 1, (y0 + y1) // 2)
+        r = bar_reading(fill_m[mid][x0:x1].tolist(), track_m[mid][x0:x1].tolist())
+        fills[stat] = r.ratio
     return fills
 
 
