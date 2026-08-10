@@ -137,13 +137,37 @@ which you used.
 optional `candy_inventory.csv`. This is what makes the repo runnable by someone
 who is not me.
 
+**Poke Genie export** — the shortest path from a real collection on your phone
+to a solved plan. Poke Genie's Scan Pro tier exports scan history as CSV, with
+IVs already resolved:
+
+```bash
+python -c "from pogo_opt.importers.pokegenie import import_csv; \
+           print(len(import_csv('scan_history.csv')[0]))"
+```
+
+Columns are matched by normalized alias rather than exact header text, because
+Poke Genie has renamed them across versions; `map_columns()` is exported so a
+caller can show the mapping before committing an import.
+
+The export carries `Level Min` / `Level Max` rather than a level, because CP is
+floored and adjacent half-levels can share a CP. The importer resolves it the
+same way the OCR path does — recompute CP and HP across the range, keep the
+levels that reproduce the scan. A 34–37 range on a Dragonite collapses to
+exactly 35.5.
+
+Rows that can't resolve are reported, not defaulted. An unappraised scan with
+missing IVs is skipped rather than imported as zeros: a confident plan built on
+invented IVs is the same failure mode as a constraint that silently stops
+binding.
+
 **MySQL** — the original `POGOR` schema, joining `my_pokemon` against
 `species_stats`, `fast_move_stats` and `charge_move_stats`. Credentials come
-from the environment:
+from the environment (`.env.example` lists them; nothing auto-loads it):
 
 ```bash
 pip install -r requirements-mysql.txt
-cp .env.example .env   # then fill it in; .env is gitignored
+set -a; source .env; set +a      # after copying .env.example -> .env
 python run.py --source mysql
 ```
 
@@ -171,6 +195,74 @@ Frames are sampled and near-duplicates skipped. Scanning every frame of a
 60-second clip is 1,800 OCR calls to read a collection that scrolls past maybe
 forty Pokémon.
 
+## Reference data
+
+`pogo_opt/data/reference.json` holds 1,486 species and 384 moves — base stats,
+typing and move stats — built from PokeMiners' GAME_MASTER by
+`scripts/build_reference.py`.
+
+It exists because `sample_data/collection.csv` is pre-joined: every row already
+carries the stats it needs, so nothing in the repo could supply them for a
+species the sample has never seen. That is every species in a real import.
+
+Committing it (264 KB) also pins game data to a known revision, so a Niantic
+rebalance shows up as a reviewable diff rather than as a silent change in
+yesterday's plan. Rebuild and re-verify with:
+
+```bash
+python scripts/build_reference.py                  # rebuild from GAME_MASTER
+python scripts/build_reference.py --check-costs    # diff costs.py against it
+```
+
+`--check-costs` is also a test. It is what caught the XL candy boundary being
+one level high, and it fails loudly rather than drifting.
+
+## HTTP API
+
+```bash
+pip install -r requirements-api.txt
+uvicorn api:app --reload          # http://127.0.0.1:8000/docs
+```
+
+| Route | Does |
+|---|---|
+| `GET /health` | collection size, source, reference revision |
+| `GET /collection?bulk=` | rows with CP and rating |
+| `POST /solve` | the MIP; returns plan, per-species usage, and duals |
+| `POST /import/pokegenie` | CSV upload; `?dry_run=true` returns the column mapping |
+| `GET` / `PUT /candy` | per-species stock, flagging which are unknown |
+
+State is in-memory (a `STATE` dict) so the API is exercisable before the SQLite
+wiring exists — `pogo_opt/db.py` and `schema.sql` are already written and
+already scoped by `trainer_id`, so that swap is the next step rather than a
+rewrite.
+
+`GET /candy` reports `known: false` for species with no inventory set. Those are
+unconstrained in the model, which is a reasonable default and a silent one;
+surfacing it lets a UI ask for the handful of numbers that would actually change
+the answer instead of demanding two hundred rows up front.
+
+## Which constraint is actually binding
+
+`build_and_solve(..., with_shadow_prices=True)` populates `Result.shadow_prices`
+with the dual value of each resource constraint:
+
+```
+budget  20,000  ->  Stardust budget          = 0.000169  per stardust
+budget  60,000  ->  Stardust budget          = 0.000090  per stardust
+budget 400,000  ->  XL candy, species 376    = 0.081781  per XL candy
+                    XL candy, species 149    = 0.017844  per XL candy
+```
+
+At 400k the answer stops being "buy more dust" and becomes "you are out of
+Metagross XL" — which is the thing a sorted list structurally cannot tell you.
+
+Two caveats, both structural. An integer program has no duals, so this re-solves
+the LP relaxation; the numbers answer "what would one more unit have been worth
+if the plan could be fractional." And they are per *unit* of resource, so
+stardust prices are tiny by construction while candy prices are large — compare
+a resource against itself over time, not against a different resource.
+
 ## What isn't modeled
 
 Being explicit about this, because the gap between a model and reality is
@@ -195,24 +287,35 @@ usually where the interesting conversation is:
   curve goes linear. Validated indirectly — `combat_power()` reproduces the
   published CP of five known perfect-IV Pokémon at level 40 exactly, which only
   works if the CPM table and the stat formulas are both right.
-- **The XL candy boundary (level 41.0) is the one number worth re-checking**
-  against GameMaster. The evidence for 41.0 is that XL amounts restart at
-  10/12/15/17/20; putting the boundary at 40.0 would start XL at 15 and break
-  that progression.
-- **Type effectiveness is not modeled** (see above), so `--bulk` and the
-  collector weights are the only tuning available.
+- **The XL candy boundary is level 40.0**, verified against GameMaster's
+  `xlCandyMinPokemonLevel` (see `scripts/build_reference.py --check-costs`).
+  An earlier revision had this at 41.0, which looked plausible because XL
+  amounts restart their own 10/12/15/17/20 progression — but the whole ladder
+  sat one level high.
+
+Because type effectiveness is absent, `--bulk` and the collector weights are the
+only tuning available.
 
 ## Layout
 
 ```
-run.py              CLI
-benchmark.py        greedy baseline comparison
-ocr_ingest.py       screenshot/video -> CSV (optional extras)
-pogo_opt/ingest.py  pure screenshot parsing
-tests/              150 tests: mechanics, solver, parsing, OCR round-trip
+run.py                        CLI
+api.py                        FastAPI wrapper over the solver
+benchmark.py                  greedy baseline comparison
+ocr_ingest.py                 screenshot/video -> CSV (optional extras)
+
 pogo_opt/
-  costs.py          CP multipliers, per-level power-up costs
-  data.py           CSV and MySQL loaders
-  model.py          rating function and the MIP
-sample_data/        runnable example collection
+  costs.py                    CP multipliers, per-level power-up costs
+  model.py                    rating function, the MIP, shadow prices
+  data.py                     CSV and MySQL loaders
+  reference.py                species/move lookup with normalized matching
+  data/reference.json         committed GAME_MASTER extract
+  importers/pokegenie.py      Poke Genie CSV -> PokemonInstance
+  ingest.py                   pure screenshot parsing
+  resolve.py                  CP + HP -> exact level
+  db.py, schema.sql           SQLite layer, scoped by trainer_id (not yet wired)
+
+scripts/build_reference.py    GAME_MASTER -> reference.json; --check-costs
+sample_data/                  runnable example collection
+tests/                        262 tests: mechanics, solver, parsing, import, DB
 ```

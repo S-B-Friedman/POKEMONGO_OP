@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Real credentials. .env.example is the committed template.
+.env
+
+# Local collection databases. The schema is in pogo_opt/schema.sql; the data
+# is personal and per-trainer, so it never belongs in the repo.
+*.db
+*.sqlite
+*.sqlite3
+
+# Scan inputs and exports -- screenshots and Poke Genie CSVs are personal data.
+screenshots/
+exports/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
