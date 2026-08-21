@@ -564,3 +564,32 @@ def test_partial_stock_only_flags_the_missing_species():
     assert 6 not in r.unbacked_candy
     if any(s.pokemon.species_id == 9 for s in r.selections):
         assert 9 in r.unbacked_candy
+
+
+def test_sample_candy_is_not_applied_to_an_imported_collection(tmp_path, capsys):
+    """The bundled candy file describes the bundled collection and nobody else.
+
+    Species ids overlap, so applying it to an imported collection gives real
+    Pokemon invented stock -- and, worse, makes the plan report itself fully
+    costed when nothing about its candy is known.
+    """
+    import run as run_module
+
+    export = tmp_path / "export.csv"
+    export.write_text(
+        "Name,Form,CP,HP,Atk IV,Def IV,Sta IV,Level Min,Level Max,"
+        "Quick Move,Charge Move,Lucky,Shadow/Purified\n"
+        "Charizard,,,,15,15,15,20,20,Fire Spin,Blast Burn,0,\n",
+        encoding="utf-8",
+    )
+
+    rc = run_module.main([
+        "--source", "pokegenie", "--csv", str(export), "--stardust", "50000",
+    ])
+    assert rc == 0
+    out = capsys.readouterr().out
+
+    assert "sample candy file is not applied" in out
+    # Charizard is species 6, which the bundled candy file does carry a count
+    # for. If that count leaked in, the plan would claim to be fully costed.
+    assert "no known stock" in out, "must warn that candy is unconstrained"

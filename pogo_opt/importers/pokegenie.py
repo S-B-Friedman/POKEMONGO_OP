@@ -31,7 +31,30 @@ import math
 
 from ..costs import cp_multiplier
 from ..data import PokemonInstance
-from ..reference import Reference, default_reference, normalize
+from ..reference import Move, Reference, default_reference, normalize
+
+# Stand-in stats for a moveset the reference does not recognise -- a move added
+# after this reference.json was built, or a name Poke Genie spells differently.
+#
+# These are the MEDIAN power, energy and duration across every fast and charge
+# move in GAME_MASTER, so an unrecognised Pokemon is rated as an unremarkable
+# one rather than a good or a terrible one. That is a real approximation and the
+# row says so: its move name carries the original text and a "?", and the import
+# records a warning.
+#
+# Dropping the row instead -- which is what this used to do, despite a comment
+# claiming otherwise -- is worse. Base stats, IVs and level are all known and
+# correct; only the rating scale is uncertain. Discarding a Pokemon entirely
+# means it can never be recommended, and quietly shrinks the collection the
+# caller thought they imported.
+_PLACEHOLDER_FAST = Move(
+    name="unknown", kind="fast", type="normal",
+    power=10, energy=10, duration=1.0,
+)
+_PLACEHOLDER_CHARGE = Move(
+    name="unknown", kind="charge", type="normal",
+    power=65, energy=50, duration=2.5,
+)
 
 # Aliases per logical field, normalized. Poke Genie's own headers vary by
 # version ("Atk IV" vs "Attack IV" vs "IV Attack"); extras cost nothing and
@@ -230,13 +253,34 @@ def build_instance(
     if not 1.0 <= level <= 50.0:
         return f"level {level} out of range"
 
-    # An unknown moveset is recoverable -- the rating just uses a neutral
-    # placeholder -- but it should be visible, not silent, so the row is
-    # tagged in the move name itself rather than dropped.
-    fast = ref.move(_text(row, mapping, "fast_move"), kind="fast")
-    charge = ref.move(_text(row, mapping, "charge_move"), kind="charge")
-    if fast is None or charge is None:
-        return "moveset not recognized"
+    # An unknown moveset is recoverable -- the rating falls back to a neutral
+    # placeholder -- but it must be visible, not silent, so the row is tagged in
+    # the move name itself rather than dropped.
+    fast_text = _text(row, mapping, "fast_move")
+    charge_text = _text(row, mapping, "charge_move")
+    fast = ref.move(fast_text, kind="fast")
+    charge = ref.move(charge_text, kind="charge")
+
+    unknown_moves = []
+    if fast is None:
+        unknown_moves.append(fast_text or "(blank)")
+        fast = _PLACEHOLDER_FAST
+        fast_text = f"{fast_text or 'unknown'}?"
+    else:
+        fast_text = fast.name
+    if charge is None:
+        unknown_moves.append(charge_text or "(blank)")
+        charge = _PLACEHOLDER_CHARGE
+        charge_text = f"{charge_text or 'unknown'}?"
+    else:
+        charge_text = charge.name
+
+    if unknown_moves:
+        moveset_note = (
+            f"moveset not recognized ({', '.join(unknown_moves)}); "
+            f"rated with median move stats"
+        )
+        note = f"{note}; {moveset_note}" if note else moveset_note
 
     shadow_col = _text(row, mapping, "shadow").lower()
     is_shadow = "shadow" in shadow_col
@@ -257,12 +301,12 @@ def build_instance(
         base_attack=species.base_attack,
         base_defense=species.base_defense,
         base_stamina=species.base_stamina,
-        fast_move=fast.name,
+        fast_move=fast_text,
         fast_power=fast.power,
         fast_duration=fast.duration,
         fast_energy=fast.energy,
         fast_type=fast.type,
-        charge_move=charge.name,
+        charge_move=charge_text,
         charge_power=charge.power,
         charge_duration=charge.duration,
         charge_energy=charge.energy,
