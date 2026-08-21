@@ -161,3 +161,97 @@ def test_barlayout_fractions_land_on_the_measured_bars():
     # The old right=0.945 ran to x=1139, well past the card and into the
     # team leader; anything beyond ~0.55 of the width is not bar.
     assert x1 < w * 0.55
+
+
+# --------------------------------------------------------------------------
+# The resource row: stardust / <species> candy / <species> candy XL
+# --------------------------------------------------------------------------
+#
+# Word positions below are as measured off a real 1206-wide detail screen
+# showing 521,865 stardust, 1,645 Swinub candy and 293 Swinub candy XL.
+
+from pogo_opt.ingest import ResourceRow, parse_resource_row  # noqa: E402
+
+REAL_VALUES = [(141, "521,865"), (574, "1,645"), (962, "293")]
+REAL_LABELS = [(180, "STARDUST"), (502, "SWINUB"), (650, "CANDY"),
+               (871, "SWINUB"), (985, "XL"), (1019, "CANDY")]
+
+
+def test_reads_a_real_resource_row():
+    r = parse_resource_row(REAL_VALUES, REAL_LABELS)
+    assert r == ResourceRow(species="Swinub", stardust=521865,
+                            candy=1645, xl_candy=293)
+    assert r.usable
+
+
+def test_edge_speck_does_not_steal_the_stardust_column():
+    """Regression: a stray "7" at x=0 claimed stardust before the real value.
+
+    Assigning per number to its nearest column let the first token seen win.
+    Columns must instead take the nearest number to themselves.
+    """
+    noisy = [(0, "7")] + REAL_VALUES + [(1174, ";")]
+    assert parse_resource_row(noisy, REAL_LABELS).stardust == 521865
+
+
+def test_each_number_is_used_once():
+    """Two columns must not both claim the same number."""
+    r = parse_resource_row(REAL_VALUES, REAL_LABELS)
+    assert len({r.stardust, r.candy, r.xl_candy}) == 3
+
+
+def test_xl_column_survives_a_missed_second_candy():
+    """OCR drops a word now and then; "XL" alone still marks the column."""
+    labels = [(180, "STARDUST"), (502, "SWINUB"), (650, "CANDY"),
+              (871, "SWINUB"), (985, "XL")]
+    assert parse_resource_row(REAL_VALUES, labels).xl_candy == 293
+
+
+def test_a_non_detail_screen_reads_as_nothing():
+    """Most frames of a scroll-through are not a detail view."""
+    r = parse_resource_row([(100, "42")], [(100, "FAVORITE")])
+    assert not r.usable
+
+
+def test_stardust_alone_is_not_usable():
+    """Stardust is one global number the trainer already knows. The species
+    and its candy are the part nothing else can supply."""
+    r = parse_resource_row([(141, "521,865")], [(180, "STARDUST")])
+    assert r.stardust == 521865
+    assert not r.usable
+
+
+def test_missing_xl_is_none_not_zero():
+    """An unread XL count is unknown, not empty -- zero would constrain the
+    solver to never spend XL on that species."""
+    labels = [(180, "STARDUST"), (502, "SWINUB"), (650, "CANDY")]
+    r = parse_resource_row(REAL_VALUES[:2], labels)
+    assert r.xl_candy is None
+
+
+def test_majority_wins_over_a_corrupted_reading():
+    """Cross-frame voting, which is not optional for the resource row.
+
+    On one short clip Anorith read {63, 631, 631, 6315} across four frames and
+    Meowth {4, 4351, 4351, 4357}. Taking the maximum or the first picks a
+    corrupted value in both cases. Only the majority picks the right one.
+    """
+    from collections import Counter
+
+    for readings, expected in (
+        ([63, 631, 631, 6315], 631),
+        ([4, 4351, 4351, 4357], 4351),
+        ([1645] * 12 + [164], 1645),
+    ):
+        assert Counter(readings).most_common(1)[0][0] == expected
+
+
+def test_a_single_frame_is_not_enough_to_trust():
+    """One reading is a coin flip on whether a digit was dropped."""
+    from collections import Counter
+
+    counter = Counter([63, 631])
+    value, agreeing = counter.most_common(1)[0]
+    assert agreeing < sum(counter.values()) / 2 + 1, (
+        "a 1-1 split must not be treated as a majority"
+    )

@@ -150,9 +150,22 @@ to *spend on*, which is a question about improvement per unit cost.
   constraint that the whole design is built around. A real collection at high
   level, where XL is scarce, is where it bites.
 
-  The candy counts are on screen — the Appraise-adjacent detail view shows
-  "1,645 SWINUB CANDY" and "293 SWINUB CANDY XL" — so OCR could fill them in.
-  Until then they have to be entered.
+  **The detail screen's resource row now reads.** `read_resource_row()` pulls
+  stardust, per-species candy and XL candy off it, and `write_candy_csv()`
+  emits exactly what `load_candy_inventory` reads. Verified end to end on a real
+  capture: 521,865 stardust / 1,645 Swinub candy / 293 XL, all three correct.
+
+  Two things it took to get there, both worth keeping in mind for the rest of
+  the screen. The numerals are dark teal and the icons beside them are bright
+  orange, and thresholding on brightness alone leaves dark icon edges that
+  Tesseract reads as digits — the candy icon turned 1,645 into 21,645. And the
+  labels are a lighter grey than the numerals, so one threshold cannot serve
+  both: tuned for the numbers it erased the labels, and a frame with three
+  perfectly-read values was discarded for having no species name.
+
+  The throughput limit is the real one though. One detail screen shows one
+  species, so a collection needs one screen per species — a 7.7s clip yielded
+  exactly one.
 
 - **The purified candy discount mostly rounds away.** Per-step candy is small
   and the code takes `ceil`, so `ceil(8 * 0.9) == 8`: the 10% discount is

@@ -166,8 +166,18 @@ into the solver. Poke Genie's Scan Pro tier exports scan history as CSV, with
 IVs already resolved:
 
 ```bash
-python -c "from pogo_opt.importers.pokegenie import import_csv; \
-           print(len(import_csv('scan_history.csv')[0]))"
+python run.py --source pokegenie --csv scan_history.csv --candy my_candy.csv
+```
+
+`--source csv` expects the flat pre-joined schema and will tell you to use
+`--source pokegenie` if you hand it an export by mistake. From Python:
+
+```python
+from pogo_opt.importers.pokegenie import import_csv
+
+result = import_csv("scan_history.csv")
+print(result.summary())          # counts, and why anything was skipped
+collection = result.collection
 ```
 
 Columns are matched by normalized alias rather than exact header text, because

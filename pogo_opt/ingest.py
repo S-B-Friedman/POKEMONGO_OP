@@ -422,3 +422,116 @@ def build_record(
                 )
 
     return rec
+
+
+# --------------------------------------------------------------------------
+# The resource row on a Pokemon's detail screen
+# --------------------------------------------------------------------------
+#
+# STARDUST | <SPECIES> CANDY | <SPECIES> CANDY XL, each a number over a label.
+# This is the only place the game shows per-species candy, and no export
+# carries it -- a Poke Genie CSV describes Pokemon, not the bag -- so it is the
+# one screen that can close the gap between "the solver has a collection" and
+# "the solver knows what you can afford".
+
+# How far a number may sit from its column heading, in original pixels. Wide
+# enough for a long value like 521,865 whose left edge is well left of the
+# label's, tight enough to exclude specks at the strip's edges.
+_RESOURCE_COLUMN_TOLERANCE = 200
+
+
+@dataclass(frozen=True)
+class ResourceRow:
+    """What one detail screen says about the trainer's resources."""
+
+    species: str | None = None
+    stardust: int | None = None
+    candy: int | None = None
+    xl_candy: int | None = None
+
+    @property
+    def usable(self) -> bool:
+        """Whether this is worth writing into a candy inventory.
+
+        Stardust alone is not: it is a single global number the user already
+        knows. The species and its candy count are the part nothing else has.
+        """
+        return bool(self.species) and self.candy is not None
+
+
+def parse_resource_row(
+    values: Sequence[tuple[int, str]],
+    labels: Sequence[tuple[int, str]],
+) -> ResourceRow:
+    """Pair OCR'd numbers with OCR'd labels by horizontal position.
+
+    Both arguments are (x, text) as read off the screen. Pairing on x rather
+    than on order matters because the columns are not evenly spaced and the OCR
+    drops a token now and then; position survives both.
+
+    The label text also carries the species name, which is what makes the row
+    worth reading at all -- "SWINUB CANDY" identifies the stock as well as
+    naming it.
+    """
+    groups: dict[str, list[tuple[int, str]]] = {}
+    for x, text in labels:
+        word = re.sub(r"[^A-Z]", "", text.upper())
+        if not word:
+            continue
+        groups.setdefault(word, []).append((x, text))
+
+    # Reconstruct each column from its words: STARDUST stands alone; the candy
+    # columns are "<NAME> CANDY" and "<NAME> CANDY XL", which share a name.
+    columns: list[tuple[int, str]] = []
+    xs_by_word = {w: [x for x, _ in v] for w, v in groups.items()}
+
+    if "STARDUST" in xs_by_word:
+        columns.append((min(xs_by_word["STARDUST"]), "stardust"))
+
+    species = None
+    for word, xs in xs_by_word.items():
+        if word not in {"STARDUST", "CANDY", "XL"} and len(word) > 2:
+            species = word.title()
+            break
+
+    candy_xs = sorted(xs_by_word.get("CANDY", []))
+    xl_xs = sorted(xs_by_word.get("XL", []))
+    if candy_xs:
+        columns.append((candy_xs[0], "candy"))
+    # The XL column is the rightmost. OCR may read "CANDY" twice, or read the
+    # "XL" and miss the second "CANDY", so accept either as evidence of it.
+    xl_candidates = ([candy_xs[-1]] if len(candy_xs) > 1 else []) + xl_xs
+    if xl_candidates:
+        columns.append((max(xl_candidates), "xl_candy"))
+
+    if not columns:
+        return ResourceRow()
+
+    numbers = [(x, int(t.replace(",", "")))
+               for x, t in values
+               if re.fullmatch(r"\d[\d,]*", t.strip())]
+
+    # Assign per COLUMN, taking the nearest number to each -- not per number,
+    # taking the nearest column. The difference matters: OCR leaves specks at
+    # the extreme edges of the strip, and iterating numbers let a stray "7" at
+    # x=0 claim the stardust column before the real 521,865 was considered.
+    found: dict[str, int] = {}
+    claimed: set[int] = set()
+    for col_x, field_name in columns:
+        candidates = [
+            (abs(col_x - x), i, value)
+            for i, (x, value) in enumerate(numbers)
+            if i not in claimed and abs(col_x - x) <= _RESOURCE_COLUMN_TOLERANCE
+        ]
+        if not candidates:
+            continue
+        _, i, value = min(candidates)
+        claimed.add(i)
+        found[field_name] = value
+
+    return ResourceRow(
+        species=species,
+        stardust=found.get("stardust"),
+        candy=found.get("candy"),
+        xl_candy=found.get("xl_candy"),
+    )

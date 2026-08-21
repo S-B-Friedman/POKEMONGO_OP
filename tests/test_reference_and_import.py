@@ -241,3 +241,55 @@ def test_lucky_flag_reaches_the_cost_curve(ref):
 def test_instance_ids_are_unique_across_duplicates(ref):
     r = import_rows([row(), row(), row()], HEADERS, ref)
     assert len({p.instance_id for p in r.collection}) == 3
+
+
+# ------------------------------------------------- unrecognized movesets
+
+def test_unknown_moveset_falls_back_instead_of_dropping_the_row(ref):
+    """Regression: the row was dropped while a comment claimed it was kept.
+
+    Base stats, IVs and level are all known and correct for such a row; only
+    the rating scale is uncertain. Dropping it means the Pokemon can never be
+    recommended, and quietly shrinks the collection the caller imported.
+    """
+    r = import_rows([row(**{"Quick Move": "NoSuchMove"})], HEADERS, ref)
+
+    assert len(r.collection) == 1, "row must survive an unrecognized move"
+    assert not r.skipped
+    assert r.rows_read == len(r.collection)
+
+    p = r.collection[0]
+    assert p.fast_move.endswith("?"), "the placeholder must be visible in the name"
+    assert p.fast_power > 0 and p.fast_energy > 0
+    assert any("moveset not recognized" in w.reason for w in r.warnings)
+
+
+def test_both_moves_unknown_still_imports(ref):
+    r = import_rows(
+        [row(**{"Quick Move": "Nope", "Charge Move": "AlsoNope"})], HEADERS, ref
+    )
+    assert len(r.collection) == 1
+    p = r.collection[0]
+    assert p.fast_move.endswith("?") and p.charge_move.endswith("?")
+    reason = r.warnings[0].reason
+    assert "Nope" in reason and "AlsoNope" in reason
+
+
+def test_a_recognized_moveset_is_not_tagged(ref):
+    p = import_rows([row()], HEADERS, ref).collection[0]
+    assert not p.fast_move.endswith("?")
+    assert not p.charge_move.endswith("?")
+
+
+def test_row_count_is_conserved_unless_genuinely_unusable(ref):
+    """Everything recoverable is recovered; only real losses are skipped."""
+    rows = [
+        row(),
+        row(**{"Quick Move": "NoSuchMove"}),          # recoverable
+        row(**{"Atk IV": ""}),                        # not: unappraised
+    ]
+    r = import_rows(rows, HEADERS, ref)
+    assert r.rows_read == 3
+    assert len(r.collection) == 2
+    assert len(r.skipped) == 1
+    assert "IV" in r.skipped[0].reason

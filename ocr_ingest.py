@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -40,8 +41,10 @@ from pogo_opt.ingest import (
     BarReading,
     ScannedPokemon,
     bar_reading,
+    ResourceRow,
     build_record,
     contiguous_runs,
+    parse_resource_row,
     find_bar_cluster,
 )
 
@@ -428,3 +431,225 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# --------------------------------------------------------------------------
+# Reading the resource row (stardust / candy / XL candy)
+# --------------------------------------------------------------------------
+
+# The numerals are dark teal; the icons beside them are bright orange (candy)
+# or a bright vial (stardust). Thresholding on brightness alone leaves dark
+# icon edges behind, and Tesseract reads those as digits -- the candy icon
+# turned 1,645 into 21,645 and the stardust vial turned 521,865 into 1521,865.
+# Requiring the teal hue as well drops them cleanly.
+# The numerals are dark (V < 150); the labels beneath them are a lighter grey
+# (V up to ~200). One threshold cannot serve both -- tuned for the numerals it
+# erases the labels entirely, which is how a frame with three perfectly-read
+# numbers produced no species name and was discarded.
+_VALUE_MAX_VALUE = 150
+_LABEL_MAX_VALUE = 205
+_TEXT_HUE = (70, 110)
+
+# Where the row sits, as fractions of screen height. Unlike the appraisal bars
+# there is no distinctive shape to search for, so this is a band to look in.
+_RESOURCE_BAND = (0.60, 0.70)
+
+
+def _text_mask(img, max_value: int):
+    """Black text on white, with the coloured icons removed."""
+    import cv2
+    import numpy as np
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    keep = (v < max_value) & (h > _TEXT_HUE[0]) & (h < _TEXT_HUE[1])
+    return (255 - keep.astype(np.uint8) * 255)
+
+
+# Column centres as fractions of screen width, measured off a capture where the
+# labels were legible. Used only when the labels are NOT legible -- on the
+# appraisal overlay the row is dimmed to within ~6 grey levels of its
+# background, so the numbers survive and the labels do not.
+_COLUMN_FRACTIONS = {"stardust": 0.20, "candy": 0.50, "xl_candy": 0.82}
+
+
+def _strokes(band, scale: int = 3):
+    """Isolate text strokes from whatever is behind them.
+
+    A global threshold works on the white info card and fails completely on the
+    appraisal overlay, where the same row is drawn over a blue gradient, a team
+    leader's face and a rating badge. A black-hat keeps dark detail smaller than
+    the kernel -- letter strokes -- and discards the smooth backgrounds, which
+    handles both without knowing which one it is looking at.
+    """
+    import cv2
+
+    big = cv2.resize(band, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (45, 45))
+    hat = cv2.morphologyEx(big, cv2.MORPH_BLACKHAT, kernel)
+    hat = cv2.normalize(hat, None, 0, 255, cv2.NORM_MINMAX)
+    _, th = cv2.threshold(hat, 60, 255, cv2.THRESH_BINARY)
+    return 255 - th
+
+
+def _words(band, scale: int = 3, psm: int = 6) -> list[tuple[int, str]]:
+    """-> [(x_in_original_pixels, token)] for one already-prepared strip."""
+    import pytesseract
+    from pytesseract import Output
+
+    data = pytesseract.image_to_data(
+        band, config=f"--psm {psm}", output_type=Output.DICT
+    )
+    return [
+        (data["left"][i] // scale, t.strip())
+        for i, t in enumerate(data["text"])
+        if t.strip()
+    ]
+
+
+def read_species_name(img, known_names=None) -> str | None:
+    """The species (or nickname) from the top of the info card.
+
+    Read separately from the resource row on purpose. The row's labels carry the
+    species too -- "SWINUB CANDY" -- but they are the first thing to disappear
+    when the appraisal overlay dims the screen, while this stays legible. Taking
+    the identity from here and only the numbers from the row is what lets the
+    same code read both screens.
+    """
+    import cv2
+
+    h, w = img.shape[:2]
+    band = cv2.cvtColor(
+        img[int(h * 0.40):int(h * 0.46), int(w * 0.15):int(w * 0.85)],
+        cv2.COLOR_BGR2GRAY,
+    )
+    text = " ".join(t for _, t in _words(_strokes(band), psm=7))
+    if not text.strip():
+        return None
+    if known_names:
+        return match_species_name(text, known_names)
+    # Nicknames are common ("Pikachu96"), so keep the leading alphabetic run.
+    m = re.match(r"[A-Za-z][A-Za-z'.\- ]{2,}", text.strip())
+    return m.group(0).strip() if m else None
+
+
+def read_resource_row(img) -> ResourceRow:
+    """Read stardust and per-species candy off a Pokemon's detail screen.
+
+    This is the only screen that shows per-species candy, and no export carries
+    it, so it is the one route to the second resource the solver constrains.
+
+    Returns an empty ResourceRow rather than guessing when the screen is not a
+    detail view -- most frames of a scroll-through are not.
+    """
+    _require("cv2", "opencv-python-headless")
+    _require("pytesseract", "pytesseract")
+    import cv2
+
+    h, w = img.shape[:2]
+    top, bottom = int(h * _RESOURCE_BAND[0]), int(h * _RESOURCE_BAND[1])
+    bh = bottom - top
+    # The clean info card: dark teal text on white, icons removed by hue. This
+    # reads all three columns, and reads them exactly, so it is tried first.
+    values = _words(_text_mask(img, _VALUE_MAX_VALUE)[top:bottom, :][
+        int(bh * 0.20):int(bh * 0.55), :])
+    labels = _words(_text_mask(img, _LABEL_MAX_VALUE)[top:bottom, :][
+        int(bh * 0.55):int(bh * 0.98), :])
+
+    row = parse_resource_row(values, labels)
+    if row.usable:
+        return row
+
+    grey = cv2.cvtColor(img[top:bottom, :], cv2.COLOR_BGR2GRAY)
+
+    # The labels went unread. On the appraisal overlay they are dimmed to within
+    # a few grey levels of their background while the numbers survive, so fall
+    # back to fixed column positions and take the identity from the name at the
+    # top of the card instead. Guessing the columns is only safe because the
+    # layout is fixed; guessing the species never would be, so a frame with no
+    # readable name yields nothing.
+    species = read_species_name(img)
+    if not species:
+        return ResourceRow()
+
+    # Search the whole band, not the value sub-slice the clean path uses. The
+    # overlay shifts the row slightly, and slicing to where the numbers sit on
+    # the info card cut Pikachu's 9,331 out of frame entirely.
+    dimmed = _words(_strokes(grey))
+    # Strip punctuation the black-hat leaves stuck to a token -- "631+" was a
+    # clean 631 with a stray mark welded on. The digits themselves still have to
+    # match exactly afterwards; this trims the edges, it does not loosen the
+    # match.
+    numbers = []
+    for x, token in dimmed:
+        trimmed = token.strip("+-.'|\"_*~ ")
+        if re.fullmatch(r"\d[\d,]*", trimmed):
+            numbers.append((x, int(trimmed.replace(",", ""))))
+
+    # ONLY the candy column is taken here. On this screen the rating badge sits
+    # over the stardust figure and the team leader stands over the XL one, so
+    # both come back truncated -- a 521,865 read as 45, a 293 read as 2. Those
+    # are not low-confidence readings, they are confident readings of a partly
+    # hidden number, which is the one kind of output this pipeline must not
+    # produce. Candy sits between the two and stays clear.
+    centre = int(w * _COLUMN_FRACTIONS["candy"])
+    near = [(abs(centre - x), v) for x, v in numbers if abs(centre - x) <= w * 0.10]
+    if not near:
+        return ResourceRow()
+    return ResourceRow(species=species, candy=min(near)[1])
+
+
+def scan_resource_rows(frames, ref=None, sample_every: int = 5) -> dict[int, ResourceRow]:
+    """Read every detail screen in a frame sequence -> {species_id: ResourceRow}.
+
+    Frames that are not a detail view read as empty and are skipped, so a
+    scroll-through can be fed in whole.
+
+    Where a species appears on several frames the MAJORITY reading wins. This is
+    the same trick the rest of the pipeline uses -- a few seconds of video is
+    dozens of frames of one screen -- and it is not optional here. A single
+    frame's OCR drops or doubles a digit often enough to matter: across one
+    short clip Anorith read {63, 631, 631, 6315} and Meowth {4, 4351, 4351,
+    4357}. Taking the maximum, or the first, picks the corrupted value in both
+    cases; the majority picks the right one.
+    """
+    from collections import Counter
+
+    from pogo_opt.reference import default_reference
+
+    ref = ref or default_reference()
+    votes: dict[int, Counter] = {}
+    seen: dict[int, ResourceRow] = {}
+
+    for i, img in enumerate(frames):
+        if i % sample_every:
+            continue
+        row = read_resource_row(img)
+        if not row.usable:
+            continue
+        species = ref.species(row.species)
+        if species is None:
+            log.warning("resource row names %r, which is not in the reference", row.species)
+            continue
+        votes.setdefault(species.dex, Counter())[(row.candy, row.xl_candy)] += 1
+        seen.setdefault(species.dex, row)
+
+    out: dict[int, ResourceRow] = {}
+    for dex, counter in votes.items():
+        (candy, xl), agreeing = counter.most_common(1)[0]
+        total = sum(counter.values())
+        if agreeing < total / 2:
+            log.warning("no majority candy reading for species %d: %r", dex, dict(counter))
+            continue
+        out[dex] = ResourceRow(species=seen[dex].species, candy=candy, xl_candy=xl)
+    return out
+
+
+def write_candy_csv(rows: dict[int, ResourceRow], path: Path) -> int:
+    """Write {species_id: ResourceRow} in the shape load_candy_inventory reads."""
+    with Path(path).open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["species_id", "candy", "xl_candy"])
+        for sid, row in sorted(rows.items()):
+            writer.writerow([sid, row.candy, row.xl_candy if row.xl_candy is not None else ""])
+    return len(rows)
