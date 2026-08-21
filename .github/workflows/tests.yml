@@ -25,13 +25,34 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # pytesseract is only a wrapper; the OCR itself is this binary. Installed
+      # so test_text_extraction actually runs -- reading text off a screenshot
+      # is the part of the image path with no other coverage.
+      - name: Install tesseract
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr
+
+      # The OCR extras are installed so tests/test_ocr_pipeline.py actually
+      # runs. It skips itself when OpenCV and Pillow are missing, so leaving
+      # them out meant the image path was silently untested in CI -- and a
+      # rewrite of the bar reader broke it without anything going red.
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt -r requirements-api.txt
+          pip install -r requirements-dev.txt -r requirements-api.txt -r requirements-ocr.txt
 
       - name: Tests
         run: python -m pytest tests/ -q
+
+      # test_ocr_pipeline.py skips itself at import when these are absent, and a
+      # skipped test is indistinguishable from a passing one in the summary.
+      # Assert the precondition directly rather than parsing pytest output --
+      # if these import, the image path really ran.
+      #
+      # pytesseract is deliberately not asserted: it needs the tesseract binary,
+      # and gating a pull request on a system package is the kind of unrelated
+      # red that teaches people to ignore CI. That one test may still skip.
+      - name: OCR extras really installed
+        run: python -c "import cv2, PIL; print('image path will run')"
 
       # Cost conformance runs inside the suite, against the committed
       # reference.json rather than the network -- see

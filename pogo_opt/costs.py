@@ -3,10 +3,20 @@ Level-dependent constants: CP multipliers and power-up costs.
 
 NOTE ON DATA PROVENANCE
 -----------------------
-The integer-level CPM anchors below are the widely published values. Before
-relying on this for anything load-bearing, verify them against the authoritative
-source: PokeMiners' GAME_MASTER (`POKEMON_UPGRADE_SETTINGS` / `cpMultiplier`).
-This module is deliberately the single place where that swap happens.
+Every number in this file is checked against PokeMiners' GAME_MASTER
+(`POKEMON_UPGRADE_SETTINGS` / `cpMultiplier`). The stardust, candy and XL tables
+are diffed across all 49 levels by `tests/test_reference_and_import.py`, which
+reads the committed `pogo_opt/data/reference.json` and so runs offline in CI.
+`python scripts/build_reference.py --check-costs` performs the same diff against
+a freshly downloaded GAME_MASTER.
+
+That check is not decoration: it is what caught the XL candy boundary sitting a
+level high. The tests that missed it asserted this module's own belief instead
+of comparing it to anything.
+
+The one number here NOT derived from GAME_MASTER's tables is
+SHADOW_COST_SURCHARGE, which is a judgement about whether the shipped shadow
+multipliers are still applied by the client. See its comment.
 
 The previous implementation approximated CPM as a quadratic
 (0.095*L^2 - 0.854*L + 10), which is an upward-opening parabola and diverges

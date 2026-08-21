@@ -12,10 +12,18 @@ instead of re-running OCR.
 
 Requires the optional extras:  pip install -r requirements-ocr.txt
 
-STATUS: the parsing layer (pogo_opt/ingest.py) is unit-tested. This file --
-the image and video handling -- is NOT, because it needs real screenshots and
-a Vision or Tesseract install. Treat the default bar regions as a starting
-point and check them with --calibrate before trusting any IV reading.
+STATUS. The parsing layer (pogo_opt/ingest.py) is unit-tested, and so is the
+bar reading here -- against synthetic screenshots painted to match the real UI,
+plus a calibration measured on a real 1206x2622 capture where the extracted IVs
+reproduced both the displayed CP and HP at exactly one level.
+
+What is still unverified on real pixels is the TEXT: name, CP and HP have only
+ever been OCR'd from synthetic images. That is the next thing here likely to be
+wrong in a way the tests cannot see.
+
+Bar regions no longer need to be guessed. detect_bars() finds the bars in the
+image; BarLayout's fractions are only the fallback, and --calibrate is for
+checking that fallback on a new device.
 """
 
 from __future__ import annotations

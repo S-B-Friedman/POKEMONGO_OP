@@ -9,17 +9,29 @@ exists for the things that are expensive to reconstruct from code alone.
 
 | Component | State | Verified how |
 |---|---|---|
-| Optimizer | Done | 262 tests; beats greedy at all 7 benchmark budgets |
+291 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 287 need nothing beyond `requirements-dev.txt`; the other 4 are
+the image path, needing OpenCV, Pillow and the tesseract binary, all of which
+CI installs. A test that skips itself is not a test that passed, and the
+summary line does not distinguish them — so the extras are installed rather
+than allowed to quietly disable coverage.
+
+| Component | State | Verified how |
+|---|---|---|
+| Optimizer | Done | 122 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
+| Image path | Done | 4 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
-| Cost tables | Done | Diffed against GAME_MASTER across all 49 levels |
-| Level solver | Done | Round-trips exactly across levels and IV spreads |
+| Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (69 tests) |
+| Level solver | Done | 26 tests; round-trips across levels and IV spreads |
 | Frame voting | Done | Survives corrupted frames in synthetic runs |
 | SQLite schema | Done, **not wired** | 23 tests: scoping, cascades, constraints |
-| Parsing layer | Done | 21 tests, no images or API keys needed |
+| Parsing layer | Done | 24 tests, no images or API keys needed |
 | Reference data | Done | 1,486 species / 384 moves from GAME_MASTER |
+| Sample data | Generated | From `reference.json`; `--check` gates CI |
 | Poke Genie import | Done | Round-trips level ranges against recomputed CP |
 | HTTP API | Done, in-memory | Swap `STATE` for `db.py` next |
-| Bar crop geometry | Calibrated | Real 1206x2622 capture; IVs reproduce CP **and** HP |
+| Appraisal bars | Calibrated | 23 tests; real capture, IVs reproduce CP **and** HP |
+| Screen text (name/CP) | **Synthetic only** | Real tesseract in CI, but never on a real screenshot |
 | Grid tile geometry | **Not built** | Needs a real grid screenshot |
 | Scroll tracking | **Not built** | Needs a real swipe video |
 
@@ -179,7 +191,18 @@ The items below are still open *elsewhere* and are kept so they don't get lost.
 5. Wire `ocr_ingest.py` to write into SQLite instead of CSV.
 6. Later: type effectiveness as a coverage portfolio.
 
-Done since this list was last written: dual values to surface which constraint
-is actually binding (`Result.shadow_prices`), committed GAME_MASTER reference
-data with a `--check-costs` guard against silent drift, the greedy baseline's
-two-pool fix, and CI that runs the suite and the cost check on every push.
+Also worth one in-game check whenever convenient: a shadow's Power Up cost
+against a non-shadow at the same level, which settles `SHADOW_COST_SURCHARGE`.
+
+Done since this list was last written:
+
+- Dual values, to surface which constraint is actually binding
+  (`Result.shadow_prices`).
+- Committed GAME_MASTER reference data, with `--check-costs` guarding drift.
+  This caught the XL candy boundary sitting a level high.
+- The greedy baseline's two-pool fix, so the benchmark compares like with like.
+- `sample_data` regenerated from `reference.json` — 24 moves and 4 base stats
+  had been wrong, and two rows were malformed.
+- CI on 3.11 and 3.12, including the OCR extras so the image path actually runs.
+- Appraisal bars calibrated and rewritten against a real capture.
+- The 20% shadow power-up surcharge.
