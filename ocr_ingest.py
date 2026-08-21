@@ -75,6 +75,20 @@ def load_known_names(path: Path | None) -> list[str]:
     if path and path.exists():
         return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
+    # The committed reference has every species. Falling back to the 26 rows of
+    # sample_data gave the matcher 20 names to choose from, so every Pokemon not
+    # in the sample was forced onto the nearest one that was -- a Palkia came
+    # back as "Gardevoir", confidently and with a plausible CP beside it.
+    try:
+        from pogo_opt.reference import default_reference
+
+        names = sorted({s.name for s in default_reference()._species.values()})
+        if names:
+            log.info("matching names against %d species from reference.json", len(names))
+            return names
+    except Exception:
+        pass
+
     fallback = Path(__file__).parent / "sample_data" / "collection.csv"
     if fallback.exists():
         with fallback.open(newline="", encoding="utf-8") as fh:
