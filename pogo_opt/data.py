@@ -52,14 +52,26 @@ class PokemonInstance:
     is_purified: bool = False
 
     @property
-    def friendship(self) -> str:
+    def friendship(self) -> frozenset[str]:
+        """Every cost-affecting state this Pokemon is in.
+
+        A set, not one label. These flags are independent -- a purified Pokemon
+        that was later traded is both purified and lucky -- and returning a
+        single string meant picking one by precedence and silently discarding
+        the rest. `lucky` outranked `purified`, so a lucky purified Pokemon was
+        priced without its 10% discount on either resource.
+
+        `costs.step_cost` accepts either form, so callers passing a plain string
+        still work.
+        """
+        states = set()
         if self.is_lucky:
-            return "lucky"
+            states.add("lucky")
         if self.is_shadow:
-            return "shadow"
+            states.add("shadow")
         if self.is_purified:
-            return "purified"
-        return "normal"
+            states.add("purified")
+        return frozenset(states or {"normal"})
 
 
 def _as_bool(v) -> bool:

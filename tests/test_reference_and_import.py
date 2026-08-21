@@ -41,6 +41,50 @@ def test_xl_threshold_matches_game_master(costs):
     assert XL_CANDY_THRESHOLD == float(costs["xl_candy_min_pokemon_level"])
 
 
+# The multipliers below were correct but unpinned: nothing tied the literals in
+# costs.py and model.py to the data they came from, which is precisely the state
+# the XL candy boundary was in when it was found to be a level high.
+
+@pytest.mark.parametrize("state,dust_key,candy_key", [
+    ("shadow", "shadow_stardust_multiplier", "shadow_candy_multiplier"),
+    ("purified", "purified_stardust_multiplier", "purified_candy_multiplier"),
+])
+def test_cost_multipliers_match_game_master(state, dust_key, candy_key, costs):
+    from pogo_opt.costs import _STATE_MULTIPLIERS
+
+    assert _STATE_MULTIPLIERS[state] == (
+        pytest.approx(costs[dust_key]),
+        pytest.approx(costs[candy_key]),
+    )
+
+
+def test_lucky_multiplier_is_not_in_game_master(costs):
+    """Documents why lucky cannot be pinned like the other two.
+
+    GAME_MASTER carries no lucky cost multiplier. The half-stardust discount
+    rests on observation, so if this ever starts failing, upstream has begun
+    shipping the value and it should be read from there instead.
+    """
+    assert not [k for k in costs if "lucky" in k.lower()]
+
+
+@pytest.mark.parametrize("const,key", [
+    ("SHADOW_ATTACK_MULT", "shadow_attack_multiplier"),
+    ("SHADOW_DEFENSE_MULT", "shadow_defense_multiplier"),
+    ("STAB_BONUS", "same_type_attack_bonus_multiplier"),
+])
+def test_combat_multipliers_match_game_master(const, key):
+    import json
+
+    from pogo_opt import model
+
+    combat = json.loads(REFERENCE_PATH.read_text(encoding="utf-8"))["combat"]
+    # SHADOW_DEFENSE_MULT is written 5/6; GAME_MASTER ships the rounded
+    # 0.8333333. They agree to 3e-8, which is far below anything that can move
+    # a rating, so the tolerance is deliberate rather than sloppy.
+    assert getattr(model, const) == pytest.approx(combat[key], abs=1e-6)
+
+
 @pytest.mark.parametrize("level", range(1, 50))
 def test_step_cost_matches_game_master(level, costs):
     """Every level, all three resources. No sampled subset, because the bug
@@ -190,7 +234,7 @@ def test_shadow_and_purified_are_distinguished(ref):
 
 def test_lucky_flag_reaches_the_cost_curve(ref):
     p = import_rows([row(Lucky="1")], HEADERS, ref).collection[0]
-    assert p.friendship == "lucky"
+    assert p.friendship == frozenset({"lucky"})
     assert cumulative_cost(20.0, 25.0, p.friendship)[0] < cumulative_cost(20.0, 25.0)[0]
 
 

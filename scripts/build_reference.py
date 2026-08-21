@@ -155,7 +155,28 @@ def extract_costs(gm: list) -> dict:
         "purified_stardust_multiplier": up["purifiedStardustMultiplier"],
         "purified_candy_multiplier": up["purifiedCandyMultiplier"],
         "max_normal_upgrade_level": up["maxNormalUpgradeLevel"],
+        # XL candy is also gated on the trainer, not just the Pokemon. Not
+        # modelled -- the solver has no notion of a trainer level -- but carried
+        # so the omission is visible rather than invisible.
+        "xl_candy_min_player_level": up["xlCandyMinPlayerLevel"],
+        "allowed_levels_above_player": up["allowedLevelsAbovePlayer"],
         "cp_multiplier": cpm,
+    }
+
+
+def extract_combat(gm: list) -> dict:
+    """Combat multipliers, which live in COMBAT_SETTINGS rather than upgrades.
+
+    model.py had these as correct hardcoded literals with nothing tying them to
+    the source. Extracting them lets a test pin them, which is the same guard
+    that caught the XL candy boundary.
+    """
+    cs = next(e["data"]["combatSettings"] for e in gm
+              if e.get("templateId") == "COMBAT_SETTINGS")
+    return {
+        "same_type_attack_bonus_multiplier": cs["sameTypeAttackBonusMultiplier"],
+        "shadow_attack_multiplier": cs["shadowPokemonAttackBonusMultiplier"],
+        "shadow_defense_multiplier": cs["shadowPokemonDefenseBonusMultiplier"],
     }
 
 
@@ -208,6 +229,7 @@ def main() -> int:
         "species": extract_species(gm),
         "moves": extract_moves(gm),
         "costs": costs,
+        "combat": extract_combat(gm),
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(reference, separators=(",", ":")), encoding="utf-8")

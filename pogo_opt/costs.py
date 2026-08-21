@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 from functools import lru_cache
+from typing import Iterable
 
 # Official CPM values at integer levels.
 _CPM_INTEGER = {
@@ -118,17 +119,35 @@ _CANDY_TIERS: list[tuple[float, float, int]] = [
 # `python scripts/build_reference.py --check-costs`, which is also a test.
 XL_CANDY_THRESHOLD = 40.0
 
-# Shadow power-ups cost 20% more stardust and candy; see step_cost().
+# Per-state (stardust, candy) multipliers on a power-up.
 #
-# GAME_MASTER carries `shadowStardustMultiplier: 1.2` and
-# `shadowCandyMultiplier: 1.2`. This was previously off on the belief that
-# Niantic had removed the surcharge and the fields were vestigial. Turned on as
-# a deliberate call: the authoritative data says the multipliers exist, and the
-# asymmetry of being wrong favours it. Charging a surcharge that no longer
-# applies makes the plan slightly conservative about shadows; omitting one that
-# does apply underprices every shadow by 20% on both resources and lets the
-# solver overcommit to them.
+# The shadow and purified values are POKEMON_UPGRADE_SETTINGS'
+# shadow/purifiedStardustMultiplier and ...CandyMultiplier, confirmed present in
+# the current GAME_MASTER and pinned by a conformance test against the committed
+# reference.json -- the same guard that caught the XL candy boundary.
+#
+# LUCKY IS THE EXCEPTION. GAME_MASTER carries no lucky cost multiplier at all;
+# the half-stardust discount is not in the data anywhere. 0.5 is the widely
+# published figure and matches play, but unlike the other two it rests on
+# observation rather than on the shipped tables, so no test can pin it.
+_STATE_MULTIPLIERS: dict[str, tuple[float, float]] = {
+    "normal": (1.0, 1.0),
+    "lucky": (0.5, 1.0),      # not in GAME_MASTER; see above
+    "purified": (0.9, 0.9),   # purified{Stardust,Candy}Multiplier
+    "shadow": (1.2, 1.2),     # shadow{Stardust,Candy}Multiplier
+}
+
+# Set False to reproduce numbers from when the surcharge was believed removed.
+# The multipliers are in the current GAME_MASTER, but their presence in the data
+# does not strictly prove the client applies them, so this stays a flag.
 SHADOW_COST_SURCHARGE = True
+
+# States that cannot co-occur, and why. Checked rather than assumed, because
+# silently pricing an impossible Pokemon is how a plan goes quietly wrong.
+_CONTRADICTORY = (
+    frozenset({"shadow", "purified"}),   # purifying is what removes shadow
+    frozenset({"shadow", "lucky"}),      # shadows cannot be traded
+)
 
 
 def _candy_for(level: float) -> int:
@@ -143,14 +162,55 @@ def _bracket_index(level: float) -> int:
     return min(idx, len(_STARDUST_BRACKETS) - 1)
 
 
-def step_cost(level: float, friendship: str = "normal") -> tuple[int, int, int]:
+def friendship_multipliers(friendship: str | Iterable[str] = "normal") -> tuple[float, float]:
+    """Compose the (stardust, candy) multipliers for one or more states.
+
+    A Pokemon can be in more than one of these at once -- a purified Pokemon
+    that was later traded is both purified and lucky -- and the discounts are
+    independent, so they compose multiplicatively: 0.5 * 0.9 = 0.45 stardust.
+
+    This used to be impossible to express. `friendship` was a single string, and
+    `PokemonInstance.friendship` picked one state by precedence, returning
+    "lucky" for a lucky purified Pokemon and dropping the purified discount on
+    both resources entirely. Collapsing independent flags into one enum threw
+    the extra information away silently, which is the failure mode this codebase
+    keeps rediscovering.
+
+    CONFIRMED multiplicative, not "apply the best one": a lucky purified
+    Pokemon powers up at 0.5 * 0.9 = 0.45 of the normal stardust, i.e. 55% off.
+    GAME_MASTER cannot settle this -- it carries no lucky multiplier at all --
+    so it rests on reported in-game behaviour rather than on the shipped tables.
+    """
+    states = ({friendship} if isinstance(friendship, str) else set(friendship)) or {"normal"}
+
+    unknown = states - _STATE_MULTIPLIERS.keys()
+    if unknown:
+        raise ValueError(f"unknown friendship state(s): {sorted(unknown)}")
+    for bad in _CONTRADICTORY:
+        if bad <= states:
+            raise ValueError(f"contradictory friendship states: {sorted(bad)}")
+
+    dust = candy = 1.0
+    for state in states:
+        if state == "shadow" and not SHADOW_COST_SURCHARGE:
+            continue
+        dm, cm = _STATE_MULTIPLIERS[state]
+        dust *= dm
+        candy *= cm
+    return dust, candy
+
+
+def step_cost(
+    level: float, friendship: str | Iterable[str] = "normal"
+) -> tuple[int, int, int]:
     """
     Cost of powering up once from `level`.
 
     Returns (stardust, candy, xl_candy). Exactly one of candy / xl_candy is
     non-zero.
 
-    `friendship` applies the standard multipliers:
+    `friendship` is a state name, or an iterable of them for a Pokemon in more
+    than one at once:
       lucky    -> half stardust
       purified -> 10% off stardust and candy
       shadow   -> 20% surcharge on stardust and candy
@@ -162,21 +222,18 @@ def step_cost(level: float, friendship: str = "normal") -> tuple[int, int, int]:
     dust = _STARDUST_BRACKETS[i]
     candy = _candy_for(level)
 
-    # Lucky halves stardust; purified is 10% off both; shadow adds 20% to both.
-    #
-    # The shadow surcharge stays behind a flag rather than being inlined, so
-    # anyone reproducing numbers from the period when it was believed removed
-    # can set SHADOW_COST_SURCHARGE = False and get them back.
-    multipliers = {
-        "normal": (1.0, 1.0),
-        "lucky": (0.5, 1.0),
-        "purified": (0.9, 0.9),
-        "shadow": (1.2, 1.2) if SHADOW_COST_SURCHARGE else (1.0, 1.0),
-    }
-    if friendship not in multipliers:
-        raise ValueError(f"unknown friendship state: {friendship}")
-    dm, cm = multipliers[friendship]
+    dm, cm = friendship_multipliers(friendship)
 
+    # ROUNDING IS AN ASSUMPTION, and a load-bearing one for candy. Per-step
+    # candy is small, so ceil swallows the purified 10% discount entirely on 68
+    # of the 98 half-levels -- every tier at 8 candy or below, since
+    # ceil(8 * 0.9) == 8. Only the 10/12/15/17/20 tiers actually see it.
+    #
+    # GAME_MASTER ships the multipliers but not the rounding rule, and ceil,
+    # floor and round give visibly different candy bills. Kept as ceil because
+    # it errs toward overcharging, which makes a plan slightly too cautious
+    # rather than unaffordable -- but it is a guess, and worth one in-game check
+    # against a purified Pokemon sitting in a 10+ candy tier.
     dust = int(round(dust * dm))
     candy = int(math.ceil(candy * cm))
 
@@ -186,7 +243,7 @@ def step_cost(level: float, friendship: str = "normal") -> tuple[int, int, int]:
 
 
 def cumulative_cost(
-    from_level: float, to_level: float, friendship: str = "normal"
+    from_level: float, to_level: float, friendship: str | Iterable[str] = "normal"
 ) -> tuple[int, int, int]:
     """Total (stardust, candy, xl_candy) to walk from one level to another."""
     if to_level < from_level:

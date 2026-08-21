@@ -162,7 +162,7 @@ The roster — which Pokémon, at what level, with which IVs and moves — is
 curated and untouched by that script.
 
 **Poke Genie export** — the shortest path from a real collection on your phone
-to a solved plan. Poke Genie's Scan Pro tier exports scan history as CSV, with
+into the solver. Poke Genie's Scan Pro tier exports scan history as CSV, with
 IVs already resolved:
 
 ```bash
@@ -184,6 +184,20 @@ Rows that can't resolve are reported, not defaulted. An unappraised scan with
 missing IVs is skipped rather than imported as zeros: a confident plan built on
 invented IVs is the same failure mode as a constraint that silently stops
 binding.
+
+**It does not carry your candy.** A Poke Genie export describes Pokémon, not
+your bag, so an import gives the solver a collection and no per-species candy
+counts at all. Candy then constrains nothing, and the plan is optimal against
+stardust alone — which can prescribe five power-ups on a species you have
+twelve candy for.
+
+That is exactly the silent-constraint failure this project exists to avoid, so
+it is reported rather than assumed away: `Result.fully_costed` is False,
+`Result.unbacked_candy` names the species, `run.py` prints a warning, and
+`POST /solve` returns `fully_costed` and `candy_warning`. Candy has to come
+from somewhere else — `--candy` / `PUT /candy` — and `GET /candy` flags which
+species are still unknown so a UI can ask for the handful that would actually
+change the answer.
 
 **MySQL** — the original `POGOR` schema, joining `my_pokemon` against
 `species_stats`, `fast_move_stats` and `charge_move_stats`. Credentials come
@@ -321,9 +335,16 @@ usually where the interesting conversation is:
   Left out deliberately — the conversion is rare in practice.
 - **The shadow surcharge is a judgement, not a measurement.** Shadow power-ups
   are charged 20% more on both resources, on the strength of GAME_MASTER's
-  `shadowStardustMultiplier: 1.2` and `shadowCandyMultiplier: 1.2`. Whether the
-  client still applies those is not something the data settles. `costs.py` keeps
-  it behind `SHADOW_COST_SURCHARGE` so it is one line to revert.
+  `shadowStardustMultiplier: 1.2` and `shadowCandyMultiplier: 1.2` — both
+  present in the current file and pinned by a test. Whether the client still
+  applies them is not something the data settles. `costs.py` keeps it behind
+  `SHADOW_COST_SURCHARGE` so it is one line to revert.
+- **How lucky and purified combine, and the candy rounding rule.** GAME_MASTER
+  carries no lucky multiplier at all, so whether a lucky purified Pokémon gets
+  both discounts or only the better one is not in the data; they are composed
+  multiplicatively here. Separately, per-step candy is small enough that `ceil`
+  hides the purified 10% on most levels. Both are stated in `PROJECT_NOTES`
+  rather than left to be discovered.
 - **Time.** This is a single-period allocation. Stardust accrues daily, so the
   real problem is multi-period, and spending early compounds differently than
   spending late.
@@ -374,7 +395,7 @@ scripts/
   build_reference.py          GAME_MASTER -> reference.json; --check-costs
   rebuild_sample_data.py      regenerate sample stat columns; --check
 sample_data/                  runnable example collection
-tests/                        291 tests: mechanics, solver, parsing, import,
+tests/                        307 tests: mechanics, solver, parsing, import,
                               DB, appraisal bars, image path
 .github/workflows/tests.yml   CI: suite + entry points on 3.11 and 3.12
 ```

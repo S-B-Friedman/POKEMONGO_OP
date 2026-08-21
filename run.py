@@ -45,6 +45,12 @@ def main(argv=None) -> int:
     else:
         collection = load_from_csv(args.csv)
 
+    # An explicitly named file that is not there is a mistake, not a request to
+    # solve without candy. Falling back silently would drop every candy
+    # constraint and still print a confident plan.
+    if args.candy and args.candy != DEFAULT_CANDY and not args.candy.exists():
+        raise SystemExit(f"--candy file not found: {args.candy}")
+
     candy, xl_candy = load_candy_inventory(
         args.candy if args.candy and args.candy.exists() else None
     )
@@ -99,7 +105,7 @@ def main(argv=None) -> int:
     print(f"{len(result.selections)} Pokemon | "
           f"stardust {result.stardust_used:,} / {result.stardust_budget:,} "
           f"({leftover:,} unspent) | total gain {result.total_gain:.1f}")
-    states = {s.pokemon.friendship for s in result.selections} - {"normal"}
+    states = set().union(*(s.pokemon.friendship for s in result.selections)) - {"normal"}
     if states:
         legend = {
             "lucky": "L lucky (half stardust)",
@@ -107,6 +113,11 @@ def main(argv=None) -> int:
             "shadow": "S shadow (20% surcharge)",
         }
         print("  ".join(legend[s] for s in ("lucky", "purified", "shadow") if s in states))
+
+    warning = result.candy_warning()
+    if warning:
+        print(f"\nWARNING: {warning}.")
+        print("         Pass --candy with your per-species counts to constrain it.")
     return 0
 
 

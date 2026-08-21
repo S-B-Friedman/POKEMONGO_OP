@@ -453,3 +453,114 @@ def test_greedy_baseline_tracks_xl_candy_separately():
         "granting XL candy must not reduce what the baseline can afford"
     )
     assert gain_with_xl > 0
+
+
+# --------------------------------------------------------------------------
+# Friendship states compose; they are not one label
+# --------------------------------------------------------------------------
+
+def test_lucky_and_purified_stack():
+    """Regression: `friendship` was one string picked by precedence.
+
+    A purified Pokemon that was later traded is both purified and lucky. The
+    old property returned "lucky" and dropped the purified discount on both
+    resources, overcharging stardust by 11%.
+    """
+    from pogo_opt.costs import friendship_multipliers
+
+    assert friendship_multipliers({"lucky", "purified"}) == (
+        pytest.approx(0.45), pytest.approx(0.9)
+    )
+
+    both = cumulative_cost(20.0, 25.0, {"lucky", "purified"})
+    lucky_only = cumulative_cost(20.0, 25.0, "lucky")
+    assert both[0] < lucky_only[0]
+    assert both[0] == pytest.approx(cumulative_cost(20.0, 25.0)[0] * 0.45, rel=0.01)
+
+
+def test_instance_reports_every_state_it_is_in():
+    p = make("p1", is_lucky=True, is_purified=True)
+    assert p.friendship == frozenset({"lucky", "purified"})
+    assert make("p2").friendship == frozenset({"normal"})
+
+
+def test_a_plain_string_still_works():
+    """Callers predating the set form must not break."""
+    assert cumulative_cost(20.0, 25.0, "shadow") == cumulative_cost(
+        20.0, 25.0, {"shadow"}
+    )
+
+
+@pytest.mark.parametrize("states", [
+    {"shadow", "purified"},   # purifying is what removes shadow
+    {"shadow", "lucky"},      # shadows cannot be traded
+])
+def test_contradictory_states_are_rejected(states):
+    """Better to raise than to price a Pokemon that cannot exist."""
+    from pogo_opt.costs import friendship_multipliers
+
+    with pytest.raises(ValueError, match="contradictory"):
+        friendship_multipliers(states)
+
+
+def test_unknown_state_is_rejected():
+    from pogo_opt.costs import friendship_multipliers
+
+    with pytest.raises(ValueError, match="unknown"):
+        friendship_multipliers({"best_buddy"})
+
+
+def test_shadow_surcharge_flag_still_disables_only_shadow():
+    """Flipping the flag must not disturb the other states' multipliers."""
+    from pogo_opt import costs
+
+    original = costs.SHADOW_COST_SURCHARGE
+    try:
+        costs.SHADOW_COST_SURCHARGE = False
+        assert costs.friendship_multipliers("shadow") == (1.0, 1.0)
+        assert costs.friendship_multipliers("purified") == (
+            pytest.approx(0.9), pytest.approx(0.9)
+        )
+        assert costs.friendship_multipliers("lucky") == (pytest.approx(0.5), 1.0)
+    finally:
+        costs.SHADOW_COST_SURCHARGE = original
+
+
+# --------------------------------------------------------------------------
+# An absent constraint must not look like a satisfied one
+# --------------------------------------------------------------------------
+
+def test_plan_reports_candy_it_has_no_stock_for():
+    """A Poke Genie export carries no candy counts, so importing one and
+    solving yields a plan constrained only by stardust. That is correct as far
+    as it goes and potentially impossible to execute, so it must be visible."""
+    collection = [make(f"p{i}", species_id=6, level=20.0) for i in range(4)]
+
+    blind = build_and_solve(collection, stardust_budget=500_000)
+    assert not blind.fully_costed
+    assert 6 in blind.unbacked_candy
+    spent, _ = blind.unbacked_candy[6]
+    assert spent == sum(s.candy for s in blind.selections)
+    assert "may not be affordable" in blind.candy_warning()
+
+
+def test_known_stock_clears_the_warning():
+    collection = [make(f"p{i}", species_id=6, level=20.0) for i in range(4)]
+    informed = build_and_solve(
+        collection, stardust_budget=500_000,
+        candy_inventory={6: 500}, xl_candy_inventory={6: 0},
+    )
+    assert informed.fully_costed
+    assert informed.candy_warning() is None
+
+
+def test_partial_stock_only_flags_the_missing_species():
+    """Knowing some species' candy must not imply knowing all of them."""
+    collection = [make("a", species_id=6, level=20.0),
+                  make("b", species_id=9, level=20.0)]
+    r = build_and_solve(
+        collection, stardust_budget=500_000, candy_inventory={6: 500},
+    )
+    assert 6 not in r.unbacked_candy
+    if any(s.pokemon.species_id == 9 for s in r.selections):
+        assert 9 in r.unbacked_candy
