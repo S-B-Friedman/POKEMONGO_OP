@@ -535,3 +535,50 @@ def parse_resource_row(
         candy=found.get("candy"),
         xl_candy=found.get("xl_candy"),
     )
+
+
+# Shortest label prefix accepted as naming a species. "//HCANDY" is a half-read
+# XL label whose prefix is a lone "H", and a single letter is a substring of
+# almost any species name -- it matched "Anorith" and handed back the XL count
+# as though it were candy. Four characters is enough to be evidence.
+_MIN_SPECIES_PREFIX = 4
+
+
+def find_candy_anchor(
+    labels: Sequence[tuple[int, str]], species: str, family: str | None = None
+) -> int | None:
+    """x of the regular-candy column, located by its label rather than a position.
+
+    The label reads as one run -- "PIKACHUCANDY", "ANORITHCAN" -- so it both
+    marks the column and names the species, and that name is checked against the
+    one read elsewhere on the screen.
+
+    Position would have been simpler and wrong. Mega-capable Pokemon carry an
+    extra Mega Energy element that shifts this row, so a hardcoded column
+    fraction reads the wrong number for exactly those Pokemon -- and they are
+    disproportionately the ones worth investing in.
+    """
+    # The label names the FAMILY, not the Pokemon: a Garchomp's screen reads
+    # "GIBLE CANDY". Matching against the species alone fails for every evolved
+    # Pokemon there is -- the base forms this was built against, Swinub and
+    # Anorith and Palkia, are their own families, which is why it looked right.
+    candidates = {re.sub(r"[^a-z]", "", (n or "").lower())
+                  for n in (family, species)}
+    candidates.discard("")
+    if not candidates:
+        return None
+
+    anchors = []
+    for x, token in labels:
+        letters = re.sub(r"[^A-Z]", "", token.upper())
+        if "CAN" not in letters:
+            continue
+        prefix = letters.split("CAN")[0].lower()
+        # A bare "CANDY" is the XL column's second word, not a candy label.
+        if len(prefix) < _MIN_SPECIES_PREFIX:
+            continue
+        head = prefix[:_MIN_SPECIES_PREFIX]
+        if any(w.startswith(head) or head in w for w in candidates):
+            anchors.append(x)
+
+    return min(anchors) if anchors else None

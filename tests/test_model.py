@@ -538,8 +538,10 @@ def test_plan_reports_candy_it_has_no_stock_for():
 
     blind = build_and_solve(collection, stardust_budget=500_000)
     assert not blind.fully_costed
-    assert 6 in blind.unbacked_candy
-    spent, _ = blind.unbacked_candy[6]
+    # Reported by candy POOL, not by species: what the trainer has to go and
+    # look up is a pile of Charmander candy, whatever the Pokemon is called.
+    assert "Charmander" in blind.unbacked_candy
+    spent, _ = blind.unbacked_candy["Charmander"]
     assert spent == sum(s.candy for s in blind.selections)
     assert "may not be affordable" in blind.candy_warning()
 
@@ -561,9 +563,9 @@ def test_partial_stock_only_flags_the_missing_species():
     r = build_and_solve(
         collection, stardust_budget=500_000, candy_inventory={6: 500},
     )
-    assert 6 not in r.unbacked_candy
+    assert "Charmander" not in r.unbacked_candy
     if any(s.pokemon.species_id == 9 for s in r.selections):
-        assert 9 in r.unbacked_candy
+        assert "Squirtle" in r.unbacked_candy
 
 
 def test_sample_candy_is_not_applied_to_an_imported_collection(tmp_path, capsys):
@@ -593,3 +595,52 @@ def test_sample_candy_is_not_applied_to_an_imported_collection(tmp_path, capsys)
     # Charizard is species 6, which the bundled candy file does carry a count
     # for. If that count leaked in, the plan would claim to be fully costed.
     assert "no known stock" in out, "must warn that candy is unconstrained"
+
+
+# --------------------------------------------------------------------------
+# Candy is pooled per evolution family, not per species
+# --------------------------------------------------------------------------
+
+def test_one_family_shares_one_candy_pool():
+    """Regression: the plan spent each family's candy once per species.
+
+    Gible, Gabite and Garchomp draw on a single pile, and the game says so --
+    a Garchomp's screen reads "GIBLE CANDY". Constraining per species_id let a
+    20-candy pool fund 20 on the Gible AND 20 on the Garchomp, then report the
+    plan fully costed. Twice the candy that exists, presented as affordable.
+    """
+    collection = ([make(f"g{i}", species_id=443, level=20.0) for i in range(3)] +
+                  [make(f"c{i}", species_id=445, level=20.0) for i in range(3)])
+
+    r = build_and_solve(collection, stardust_budget=2_000_000,
+                        candy_inventory={443: 20, 445: 20})
+    assert sum(s.candy for s in r.selections) <= 20
+
+
+def test_species_keys_and_family_keys_are_equivalent():
+    """A caller with dex numbers in hand must not lose its constraints."""
+    collection = [make(f"g{i}", species_id=443, level=20.0) for i in range(4)]
+    by_dex = build_and_solve(collection, stardust_budget=2_000_000,
+                             candy_inventory={443: 12})
+    by_family = build_and_solve(collection, stardust_budget=2_000_000,
+                                candy_inventory={"Gible": 12})
+    assert sum(s.candy for s in by_dex.selections) == \
+           sum(s.candy for s in by_family.selections) <= 12
+
+
+def test_species_keyed_inventory_still_constrains():
+    """The failure this guards against is silent: re-keying the inventory
+    without re-keying the lookup drops every constraint and looks like success."""
+    collection = [make(f"p{i}", species_id=6, level=20.0) for i in range(5)]
+    r = build_and_solve(collection, stardust_budget=2_000_000,
+                        candy_inventory={6: 10})
+    assert sum(s.candy for s in r.selections) <= 10
+    assert r.fully_costed
+
+
+def test_contradictory_counts_for_one_family_are_rejected():
+    """Two rows for one pile must agree; they describe the same candy."""
+    collection = [make("g", species_id=443, level=20.0)]
+    with pytest.raises(ValueError, match="same pile"):
+        build_and_solve(collection, stardust_budget=100_000,
+                        candy_inventory={443: 20, 445: 99})

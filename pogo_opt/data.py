@@ -259,12 +259,33 @@ def load_candy_inventory(
     if not path.exists():
         return {}, {}
 
-    candy: dict[int, int] = {}
-    xl: dict[int, int] = {}
+    # Keys are evolution families where one is known, because that is how the
+    # game pools candy -- a Gible and a Garchomp spend from one pile. The file
+    # is still written with species_id, which is what a person reads off their
+    # own screen; the mapping happens here so nobody has to know about it.
+    from .model import candy_pool_key
+
+    candy: dict = {}
+    xl: dict = {}
+    conflicts: list[str] = []
     with path.open(newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
             sid = _as_int(row["species_id"])
-            candy[sid] = _as_int(row["candy"])
+            pool = candy_pool_key(sid)
+            value = _as_int(row["candy"])
+            # Two rows for one family should agree -- they describe one pile.
+            # Disagreement means the file is wrong, so say so rather than
+            # letting whichever row came last decide.
+            if pool in candy and candy[pool] != value:
+                conflicts.append(f"{pool}: {candy[pool]} vs {value}")
+            candy[pool] = value
             if row.get("xl_candy") not in (None, ""):
-                xl[sid] = _as_int(row["xl_candy"])
+                xl[pool] = _as_int(row["xl_candy"])
+
+    if conflicts:
+        raise ValueError(
+            "candy inventory disagrees with itself. Candy is pooled per "
+            "evolution family, so every species in a family must show the same "
+            "count: " + "; ".join(conflicts)
+        )
     return candy, xl

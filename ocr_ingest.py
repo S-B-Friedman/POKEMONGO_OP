@@ -46,6 +46,7 @@ from pogo_opt.ingest import (
     contiguous_runs,
     parse_resource_row,
     find_bar_cluster,
+    find_candy_anchor,
 )
 
 log = logging.getLogger("ocr_ingest")
@@ -73,6 +74,20 @@ def load_known_names(path: Path | None) -> list[str]:
     """
     if path and path.exists():
         return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+    # The committed reference has every species. Falling back to the 26 rows of
+    # sample_data gave the matcher 20 names to choose from, so every Pokemon not
+    # in the sample was forced onto the nearest one that was -- a Palkia came
+    # back as "Gardevoir", confidently and with a plausible CP beside it.
+    try:
+        from pogo_opt.reference import default_reference
+
+        names = sorted({s.name for s in default_reference()._species.values()})
+        if names:
+            log.info("matching names against %d species from reference.json", len(names))
+            return names
+    except Exception:
+        pass
 
     fallback = Path(__file__).parent / "sample_data" / "collection.csv"
     if fallback.exists():
@@ -466,13 +481,6 @@ def _text_mask(img, max_value: int):
     return (255 - keep.astype(np.uint8) * 255)
 
 
-# Column centres as fractions of screen width, measured off a capture where the
-# labels were legible. Used only when the labels are NOT legible -- on the
-# appraisal overlay the row is dimmed to within ~6 grey levels of its
-# background, so the numbers survive and the labels do not.
-_COLUMN_FRACTIONS = {"stardust": 0.20, "candy": 0.50, "xl_candy": 0.82}
-
-
 def _strokes(band, scale: int = 3):
     """Isolate text strokes from whatever is behind them.
 
@@ -592,8 +600,27 @@ def read_resource_row(img) -> ResourceRow:
     # are not low-confidence readings, they are confident readings of a partly
     # hidden number, which is the one kind of output this pipeline must not
     # produce. Candy sits between the two and stays clear.
-    centre = int(w * _COLUMN_FRACTIONS["candy"])
-    near = [(abs(centre - x), v) for x, v in numbers if abs(centre - x) <= w * 0.10]
+    #
+    # The column is found by its LABEL, not by a fixed position. The label reads
+    # as one run -- "PIKACHUCANDY", "ANORITHCAN" -- so it both locates the
+    # column and names the species, and the species is then checked against the
+    # name read from the top of the card. A position would have been simpler and
+    # wrong: mega-capable Pokemon carry an extra Mega Energy element that shifts
+    # this row, so any hardcoded fraction reads the wrong column for them.
+    labels = _words(_strokes(grey[int(bh * 0.55):int(bh * 0.98), :]))
+    # The label names the evolution family, so look that up before matching.
+    family = None
+    try:
+        from pogo_opt.reference import default_reference
+
+        hit = default_reference().species(species)
+        family = hit.family if hit else None
+    except Exception:
+        family = None
+    anchor = find_candy_anchor(labels, species, family)
+    if anchor is None:
+        return ResourceRow()
+    near = [(abs(anchor - x), v) for x, v in numbers if abs(anchor - x) <= w * 0.15]
     if not near:
         return ResourceRow()
     return ResourceRow(species=species, candy=min(near)[1])

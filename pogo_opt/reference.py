@@ -38,6 +38,12 @@ class Species:
     type1: str
     type2: str | None
     mega: bool
+    # The evolution family's base form. Candy is pooled per family and the game
+    # labels it that way -- a Garchomp's screen reads "GIBLE CANDY" -- so this
+    # is what a candy label has to be matched against, and what a candy stock is
+    # really keyed by. Defaulted so a reference.json built before this field
+    # existed still loads.
+    family: str = ""
 
 
 @dataclass(frozen=True)
@@ -90,6 +96,22 @@ class Reference:
         if hit and kind and hit.kind != kind:
             return None
         return hit
+
+    def family_of(self, dex: int) -> str | None:
+        """The evolution family a dex number belongs to.
+
+        Candy is pooled per family, so this is the real key for a candy stock.
+        Two Pokemon with different dex numbers and the same family -- a Gible
+        and a Garchomp -- spend from one pile.
+        """
+        for s in self._species.values():
+            if s.dex == dex and s.family:
+                return s.family
+        return None
+
+    def family_by_dex(self) -> dict[int, str]:
+        """{dex: family} for every species that has one."""
+        return {s.dex: s.family for s in self._species.values() if s.family}
 
     def __len__(self) -> int:
         return len(self._species)

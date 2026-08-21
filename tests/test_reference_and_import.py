@@ -293,3 +293,29 @@ def test_row_count_is_conserved_unless_genuinely_unusable(ref):
     assert len(r.collection) == 2
     assert len(r.skipped) == 1
     assert "IV" in r.skipped[0].reason
+
+
+# --------------------------------------------------- evolution families
+
+def test_species_carry_their_evolution_family(ref):
+    """Candy is pooled per family, and the game labels it with the base form.
+
+    A Garchomp's detail screen reads "GIBLE CANDY". Matching that label against
+    the species name fails for every evolved Pokemon there is, so the family is
+    what has to be carried.
+    """
+    assert ref.species("Garchomp").family == "Gible"
+    assert ref.species("Charizard").family == "Charmander"
+    assert ref.species("Metagross").family == "Beldum"
+
+
+def test_a_base_form_is_its_own_family(ref):
+    for name in ("Palkia", "Swinub", "Anorith"):
+        assert ref.species(name).family == name
+
+
+def test_one_family_spans_the_whole_evolution_line(ref):
+    """Gible, Gabite and Garchomp draw on a single candy pool."""
+    line = [ref.species(n) for n in ("Gible", "Gabite", "Garchomp")]
+    assert {s.family for s in line} == {"Gible"}
+    assert len({s.dex for s in line}) == 3, "distinct species, shared candy"

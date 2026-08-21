@@ -255,3 +255,84 @@ def test_a_single_frame_is_not_enough_to_trust():
     assert agreeing < sum(counter.values()) / 2 + 1, (
         "a 1-1 split must not be treated as a majority"
     )
+
+
+# --------------------------------------------------------------------------
+# The candy column is found by its label, never by a fixed position
+# --------------------------------------------------------------------------
+#
+# Mega-capable Pokemon carry an extra Mega Energy element on this screen, which
+# shifts the resource row. Any hardcoded column fraction reads the wrong number
+# for exactly those Pokemon -- and they are disproportionately the ones worth
+# investing in, so the error lands where it hurts most.
+
+from pogo_opt.ingest import find_candy_anchor  # noqa: E402
+
+
+def _anchor_candy(labels, numbers, species, width=1206):
+    """Locate the column with the real function, then take its number."""
+    anchor = find_candy_anchor(labels, species)
+    if anchor is None:
+        return None
+    near = [(abs(anchor - x), v) for x, v in numbers if abs(anchor - x) <= width * 0.15]
+    return min(near)[1] if near else None
+
+
+def test_candy_found_by_label_on_a_dimmed_screen():
+    """Real tokens off the appraisal overlay, Pikachu and Anorith."""
+    assert _anchor_candy(
+        [(464, "PIKACHUCANDY"), (980, "CANDY")], [(539, 9331), (993, 4)], "Pikachu"
+    ) == 9331
+    assert _anchor_candy(
+        [(495, "ANORITHCAN\\"), (966, "//HCANDY"), (852, "XL")],
+        [(313, 45), (595, 631), (993, 2)], "Anorith",
+    ) == 631
+
+
+def test_a_shifted_layout_still_reads():
+    """The mega case: same row, moved. A fixed fraction would miss it."""
+    shifted_labels = [(140, "CHARIZARDCANDY"), (700, "CANDY")]
+    shifted_numbers = [(60, 521865), (215, 348), (712, 12)]
+    assert _anchor_candy(shifted_labels, shifted_numbers, "Charizard") == 348
+
+
+def test_a_half_read_xl_label_cannot_pose_as_candy():
+    """Without the species check, "//HCANDY" anchors the XL column and its
+    count is handed back as though it were candy."""
+    assert _anchor_candy(
+        [(966, "//HCANDY")], [(993, 2)], "Anorith"
+    ) is None
+
+
+def test_bare_candy_label_is_not_an_anchor():
+    """The XL column's second word is a bare "CANDY" with no species prefix."""
+    assert _anchor_candy([(980, "CANDY")], [(993, 4)], "Pikachu") is None
+
+
+def test_wrong_species_label_is_rejected():
+    """A label left over from the previous Pokemon mid-swipe must not match."""
+    assert _anchor_candy(
+        [(464, "PIKACHUCANDY")], [(539, 9331)], "Anorith"
+    ) is None
+
+
+def test_evolved_pokemon_are_matched_on_their_family():
+    """A Garchomp's screen reads "GIBLE CANDY", never "GARCHOMP CANDY".
+
+    Candy is pooled per evolution family and labelled with the base form, so
+    matching the label against the species name fails for every evolved Pokemon
+    there is. It went unnoticed because the Pokemon this was built against --
+    Swinub, Anorith, Palkia -- are all their own family.
+    """
+    assert find_candy_anchor([(495, "GIBLECANDY")], "Garchomp", "Gible") == 495
+    assert find_candy_anchor([(495, "CHARMANDERCANDY")], "Charizard", "Charmander") == 495
+    assert find_candy_anchor([(495, "BELDUMCANDY")], "Metagross", "Beldum") == 495
+
+
+def test_a_base_form_still_matches_its_own_name():
+    assert find_candy_anchor([(495, "PALKIACANDY")], "Palkia", "Palkia") == 495
+
+
+def test_the_wrong_family_is_still_rejected():
+    """Mid-swipe the previous Pokemon's label can still be on screen."""
+    assert find_candy_anchor([(495, "GIBLECANDY")], "Palkia", "Palkia") is None

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pogo_opt.costs import cumulative_cost
 from pogo_opt.data import load_candy_inventory, load_from_csv
-from pogo_opt.model import Weights, build_and_solve, rating
+from pogo_opt.model import Weights, build_and_solve, candy_pool_key, rating
 from pogo_opt.model import _candidate_levels  # noqa: PLC2701 - internal by design
 
 HERE = Path(__file__).parent
@@ -49,8 +49,13 @@ def greedy(collection, stardust_budget, candy_inventory, xl_candy_inventory,
     candidates.sort(key=lambda c: c[0], reverse=True)
 
     dust_left = stardust_budget
-    candy_left = dict(candy_inventory)
-    xl_left = dict(xl_candy_inventory)
+    # Keyed by candy POOL, like the solver: a Gible and a Garchomp draw on one
+    # pile. Keying by species let the baseline spend each family's candy once
+    # per species, which is the same over-spend the solver had.
+    candy_left = {candy_pool_key(k) if isinstance(k, int) else k: v
+                  for k, v in candy_inventory.items()}
+    xl_left = {candy_pool_key(k) if isinstance(k, int) else k: v
+               for k, v in xl_candy_inventory.items()}
     used_instances: set[str] = set()
     total_gain = 0.0
     dust_used = 0
@@ -59,7 +64,7 @@ def greedy(collection, stardust_budget, candy_inventory, xl_candy_inventory,
     for _, p, target, dust, candy, xl, gain in candidates:
         if p.instance_id in used_instances or dust > dust_left:
             continue
-        sid = p.species_id
+        sid = candy_pool_key(p.species_id)
         # Each resource binds only where its stock is known -- same rule the
         # solver applies when it emits a constraint per species.
         if sid in candy_left and candy > candy_left[sid]:
