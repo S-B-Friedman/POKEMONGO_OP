@@ -7,10 +7,8 @@ exists for the things that are expensive to reconstruct from code alone.
 
 ## Where each piece stands
 
-| Component | State | Verified how |
-|---|---|---|
-291 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
-**no skips**. 287 need nothing beyond `requirements-dev.txt`; the other 4 are
+304 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 300 need nothing beyond `requirements-dev.txt`; the other 4 are
 the image path, needing OpenCV, Pillow and the tesseract binary, all of which
 CI installs. A test that skips itself is not a test that passed, and the
 summary line does not distinguish them — so the extras are installed rather
@@ -18,10 +16,10 @@ than allowed to quietly disable coverage.
 
 | Component | State | Verified how |
 |---|---|---|
-| Optimizer | Done | 122 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
+| Optimizer | Done | 129 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
 | Image path | Done | 4 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
-| Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (69 tests) |
+| Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (75 tests) |
 | Level solver | Done | 26 tests; round-trips across levels and IV spreads |
 | Frame voting | Done | Survives corrupted frames in synthetic runs |
 | SQLite schema | Done, **not wired** | 23 tests: scoping, cascades, constraints |
@@ -121,6 +119,26 @@ to *spend on*, which is a question about improvement per unit cost.
   high level — hence
   `test_greedy_baseline_tracks_xl_candy_separately`, which constructs the
   binding case rather than trusting the bundled sample.
+- **Friendship states compose; they are not one label.** `PokemonInstance.
+  friendship` used to return a single string chosen by precedence, so a
+  purified Pokémon that had later been traded came back as `"lucky"` and lost
+  its purified discount on both resources — an 11% stardust overcharge. It now
+  returns the set of states, and `costs.friendship_multipliers()` composes them
+  multiplicatively. Latent on `sample_data`, where nothing is in two states at
+  once, so no published figure moved.
+
+  Two things this cannot settle. Whether the game stacks the discounts
+  multiplicatively or applies only the better one — GAME_MASTER has no lucky
+  multiplier at all, so the data is silent. And whether shadow+lucky is truly
+  impossible; it is rejected on the reasoning that shadows cannot be traded.
+
+- **The purified candy discount mostly rounds away.** Per-step candy is small
+  and the code takes `ceil`, so `ceil(8 * 0.9) == 8`: the 10% discount is
+  invisible on 68 of the 98 half-levels, surfacing only in the 10/12/15/17/20
+  tiers. GAME_MASTER ships the multipliers but not the rounding rule. `ceil`
+  errs toward overcharging, which is the safer direction, but it is a guess —
+  worth one in-game check against a purified Pokémon in a 10+ candy tier.
+
 - **Shadow power-ups now cost 20% more** (`SHADOW_COST_SURCHARGE = True`).
   GAME_MASTER carries `shadowStardustMultiplier: 1.2` and
   `shadowCandyMultiplier: 1.2`; this was previously off on the belief that
