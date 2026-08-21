@@ -46,6 +46,7 @@ from pogo_opt.ingest import (
     contiguous_runs,
     parse_resource_row,
     find_bar_cluster,
+    find_candy_anchor,
 )
 
 log = logging.getLogger("ocr_ingest")
@@ -466,13 +467,6 @@ def _text_mask(img, max_value: int):
     return (255 - keep.astype(np.uint8) * 255)
 
 
-# Column centres as fractions of screen width, measured off a capture where the
-# labels were legible. Used only when the labels are NOT legible -- on the
-# appraisal overlay the row is dimmed to within ~6 grey levels of its
-# background, so the numbers survive and the labels do not.
-_COLUMN_FRACTIONS = {"stardust": 0.20, "candy": 0.50, "xl_candy": 0.82}
-
-
 def _strokes(band, scale: int = 3):
     """Isolate text strokes from whatever is behind them.
 
@@ -592,8 +586,18 @@ def read_resource_row(img) -> ResourceRow:
     # are not low-confidence readings, they are confident readings of a partly
     # hidden number, which is the one kind of output this pipeline must not
     # produce. Candy sits between the two and stays clear.
-    centre = int(w * _COLUMN_FRACTIONS["candy"])
-    near = [(abs(centre - x), v) for x, v in numbers if abs(centre - x) <= w * 0.10]
+    #
+    # The column is found by its LABEL, not by a fixed position. The label reads
+    # as one run -- "PIKACHUCANDY", "ANORITHCAN" -- so it both locates the
+    # column and names the species, and the species is then checked against the
+    # name read from the top of the card. A position would have been simpler and
+    # wrong: mega-capable Pokemon carry an extra Mega Energy element that shifts
+    # this row, so any hardcoded fraction reads the wrong column for them.
+    labels = _words(_strokes(grey[int(bh * 0.55):int(bh * 0.98), :]))
+    anchor = find_candy_anchor(labels, species)
+    if anchor is None:
+        return ResourceRow()
+    near = [(abs(anchor - x), v) for x, v in numbers if abs(anchor - x) <= w * 0.15]
     if not near:
         return ResourceRow()
     return ResourceRow(species=species, candy=min(near)[1])

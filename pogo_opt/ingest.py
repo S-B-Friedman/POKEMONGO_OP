@@ -535,3 +535,44 @@ def parse_resource_row(
         candy=found.get("candy"),
         xl_candy=found.get("xl_candy"),
     )
+
+
+# Shortest label prefix accepted as naming a species. "//HCANDY" is a half-read
+# XL label whose prefix is a lone "H", and a single letter is a substring of
+# almost any species name -- it matched "Anorith" and handed back the XL count
+# as though it were candy. Four characters is enough to be evidence.
+_MIN_SPECIES_PREFIX = 4
+
+
+def find_candy_anchor(
+    labels: Sequence[tuple[int, str]], species: str
+) -> int | None:
+    """x of the regular-candy column, located by its label rather than a position.
+
+    The label reads as one run -- "PIKACHUCANDY", "ANORITHCAN" -- so it both
+    marks the column and names the species, and that name is checked against the
+    one read elsewhere on the screen.
+
+    Position would have been simpler and wrong. Mega-capable Pokemon carry an
+    extra Mega Energy element that shifts this row, so a hardcoded column
+    fraction reads the wrong number for exactly those Pokemon -- and they are
+    disproportionately the ones worth investing in.
+    """
+    wanted = re.sub(r"[^a-z]", "", (species or "").lower())
+    if not wanted:
+        return None
+
+    anchors = []
+    for x, token in labels:
+        letters = re.sub(r"[^A-Z]", "", token.upper())
+        if "CAN" not in letters:
+            continue
+        prefix = letters.split("CAN")[0].lower()
+        # A bare "CANDY" is the XL column's second word, not a candy label.
+        if len(prefix) < _MIN_SPECIES_PREFIX:
+            continue
+        head = prefix[:_MIN_SPECIES_PREFIX]
+        if wanted.startswith(head) or head in wanted:
+            anchors.append(x)
+
+    return min(anchors) if anchors else None
