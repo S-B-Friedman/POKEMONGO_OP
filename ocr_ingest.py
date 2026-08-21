@@ -40,8 +40,10 @@ from pogo_opt.ingest import (
     BarReading,
     ScannedPokemon,
     bar_reading,
+    ResourceRow,
     build_record,
     contiguous_runs,
+    parse_resource_row,
     find_bar_cluster,
 )
 
@@ -428,3 +430,115 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# --------------------------------------------------------------------------
+# Reading the resource row (stardust / candy / XL candy)
+# --------------------------------------------------------------------------
+
+# The numerals are dark teal; the icons beside them are bright orange (candy)
+# or a bright vial (stardust). Thresholding on brightness alone leaves dark
+# icon edges behind, and Tesseract reads those as digits -- the candy icon
+# turned 1,645 into 21,645 and the stardust vial turned 521,865 into 1521,865.
+# Requiring the teal hue as well drops them cleanly.
+# The numerals are dark (V < 150); the labels beneath them are a lighter grey
+# (V up to ~200). One threshold cannot serve both -- tuned for the numerals it
+# erases the labels entirely, which is how a frame with three perfectly-read
+# numbers produced no species name and was discarded.
+_VALUE_MAX_VALUE = 150
+_LABEL_MAX_VALUE = 205
+_TEXT_HUE = (70, 110)
+
+# Where the row sits, as fractions of screen height. Unlike the appraisal bars
+# there is no distinctive shape to search for, so this is a band to look in.
+_RESOURCE_BAND = (0.60, 0.70)
+
+
+def _text_mask(img, max_value: int):
+    """Black text on white, with the coloured icons removed."""
+    import cv2
+    import numpy as np
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    keep = (v < max_value) & (h > _TEXT_HUE[0]) & (h < _TEXT_HUE[1])
+    return (255 - keep.astype(np.uint8) * 255)
+
+
+def _words(band, scale: int = 3) -> list[tuple[int, str]]:
+    """-> [(x_in_original_pixels, token)] for one strip."""
+    import cv2
+    import pytesseract
+    from pytesseract import Output
+
+    big = cv2.resize(band, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    data = pytesseract.image_to_data(big, config="--psm 6", output_type=Output.DICT)
+    return [
+        (data["left"][i] // scale, t.strip())
+        for i, t in enumerate(data["text"])
+        if t.strip()
+    ]
+
+
+def read_resource_row(img) -> ResourceRow:
+    """Read stardust and per-species candy off a Pokemon's detail screen.
+
+    This is the only screen that shows per-species candy, and no export carries
+    it, so it is the one route to the second resource the solver constrains.
+
+    Returns an empty ResourceRow rather than guessing when the screen is not a
+    detail view -- most frames of a scroll-through are not.
+    """
+    _require("cv2", "opencv-python-headless")
+    _require("pytesseract", "pytesseract")
+    import cv2
+
+    h = img.shape[0]
+    top, bottom = int(h * _RESOURCE_BAND[0]), int(h * _RESOURCE_BAND[1])
+    bh = bottom - top
+
+    value_band = _text_mask(img, _VALUE_MAX_VALUE)[top:bottom, :]
+    label_band = _text_mask(img, _LABEL_MAX_VALUE)[top:bottom, :]
+
+    values = _words(value_band[int(bh * 0.20):int(bh * 0.55), :])
+    labels = _words(label_band[int(bh * 0.55):int(bh * 0.98), :])
+
+    return parse_resource_row(values, labels)
+
+
+def scan_resource_rows(frames, ref=None, sample_every: int = 5) -> dict[int, ResourceRow]:
+    """Read every detail screen in a frame sequence -> {species_id: ResourceRow}.
+
+    Frames that are not a detail view read as empty and are skipped, so a
+    scroll-through can be fed in whole. Where the same species appears more than
+    once the highest candy count wins, on the assumption that a partially
+    rendered frame under-reads rather than over-reads.
+    """
+    from pogo_opt.reference import default_reference
+
+    ref = ref or default_reference()
+    out: dict[int, ResourceRow] = {}
+    for i, img in enumerate(frames):
+        if i % sample_every:
+            continue
+        row = read_resource_row(img)
+        if not row.usable:
+            continue
+        species = ref.species(row.species)
+        if species is None:
+            log.warning("resource row names %r, which is not in the reference", row.species)
+            continue
+        prev = out.get(species.dex)
+        if prev is None or (row.candy or 0) > (prev.candy or 0):
+            out[species.dex] = row
+    return out
+
+
+def write_candy_csv(rows: dict[int, ResourceRow], path: Path) -> int:
+    """Write {species_id: ResourceRow} in the shape load_candy_inventory reads."""
+    with Path(path).open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["species_id", "candy", "xl_candy"])
+        for sid, row in sorted(rows.items()):
+            writer.writerow([sid, row.candy, row.xl_candy if row.xl_candy is not None else ""])
+    return len(rows)
