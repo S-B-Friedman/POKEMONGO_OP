@@ -153,6 +153,46 @@ def rating(p: PokemonInstance, level: float, w: Weights) -> float:
 # Model
 # --------------------------------------------------------------------------
 
+def candy_pool_key(species_id: int):
+    """The key a species' candy stock is really held under.
+
+    The evolution family where one is known, and the dex number otherwise --
+    for a species missing from the reference, or when reference.json is absent
+    entirely. Falling back to the dex number reproduces the old per-species
+    behaviour for that species rather than dropping its constraint, which would
+    be the worse failure.
+    """
+    try:
+        from .reference import default_reference
+
+        family = default_reference().family_by_dex().get(species_id)
+    except Exception:
+        family = None
+    return family or species_id
+
+
+def _as_pool_keyed(inventory: dict | None) -> dict:
+    """Re-key an inventory onto candy pools, whatever it arrived keyed by.
+
+    An int key is a dex number and gets mapped to its family; anything else is
+    already a pool key and is left alone. Where both forms name one pool they
+    must agree, because they describe a single pile of candy.
+    """
+    if not inventory:
+        return {}
+    out: dict = {}
+    for key, value in inventory.items():
+        pool = candy_pool_key(key) if isinstance(key, int) else key
+        if pool in out and out[pool] != value:
+            raise ValueError(
+                f"candy inventory gives two different counts for the {pool} "
+                f"family ({out[pool]} and {value}); candy is pooled per family, "
+                f"so those describe the same pile"
+            )
+        out[pool] = value
+    return out
+
+
 @dataclass
 class Selection:
     pokemon: PokemonInstance
@@ -284,14 +324,23 @@ def build_and_solve(
                 f"(candy, xl_candy) tuple -- unpack it."
             )
         for k, v in inv.items():
-            if not isinstance(k, int) or not isinstance(v, (int, float)):
+            # A key is either a dex number or a candy-pool name ("Gible"), and
+            # both are accepted -- see _as_pool_keyed. What is still rejected is
+            # a count that is not a number, because that is how a malformed
+            # inventory silently stops constraining anything.
+            if not isinstance(k, (int, str)) or not isinstance(v, (int, float)):
                 raise ValueError(
-                    f"{label} must map int species_id -> numeric count; "
-                    f"got {k!r} -> {v!r}"
+                    f"{label} must map species_id or family name -> numeric "
+                    f"count; got {k!r} -> {v!r}"
                 )
 
-    candy_inventory = candy_inventory or {}
-    xl_candy_inventory = xl_candy_inventory or {}
+    # Accept either keying. load_candy_inventory already returns family keys,
+    # but a caller with a dict of species ids in hand -- which is the obvious
+    # thing to write -- must not have its constraints silently disappear
+    # because the key no longer matches. Normalizing here means an unmapped
+    # key is impossible rather than merely unlikely.
+    candy_inventory = _as_pool_keyed(candy_inventory)
+    xl_candy_inventory = _as_pool_keyed(xl_candy_inventory)
 
     prob = pulp.LpProblem("Pokemon_PowerUp_Allocation", pulp.LpMaximize)
 
@@ -332,26 +381,33 @@ def build_and_solve(
         "Stardust_Budget",
     )
 
-    # Candy is per species, and only binds where we know the inventory.
-    by_species: dict[int, list[tuple[str, float]]] = {}
+    # Candy is pooled per evolution FAMILY, not per species. A Gible and a
+    # Garchomp spend from one pile, and the game says so on screen -- a
+    # Garchomp's detail view reads "GIBLE CANDY".
+    #
+    # Grouping by species_id instead gave each its own constraint against the
+    # same stock: with 20 Gible candy the plan spent 20 on the Gible AND 20 on
+    # the Garchomp, then reported itself fully costed. Twice the candy that
+    # exists, presented as affordable. Any collection holding a pre-evolution
+    # alongside its evolution is affected, which is most of them.
+    by_pool: dict[object, list[tuple[str, float]]] = {}
     for k in x:
-        by_species.setdefault(meta[k][0].species_id, []).append(k)
+        by_pool.setdefault(candy_pool_key(meta[k][0].species_id), []).append(k)
 
-    for species_id, keys in by_species.items():
-        if species_id in candy_inventory:
+    for pool, keys in by_pool.items():
+        label = str(pool).replace(" ", "_")
+        if pool in candy_inventory:
             prob += (
-                pulp.lpSum(x[k] * meta[k][2] for k in keys)
-                <= candy_inventory[species_id],
-                f"Candy_Species_{species_id}",
+                pulp.lpSum(x[k] * meta[k][2] for k in keys) <= candy_inventory[pool],
+                f"Candy_Species_{label}",
             )
         # XL candy is a distinct resource with its own stock. Constraining it
         # against the regular candy count (as this did) let a species with 180
         # candy "afford" 180 XL, which is roughly 18,000 candy of buying power.
-        if species_id in xl_candy_inventory:
+        if pool in xl_candy_inventory:
             prob += (
-                pulp.lpSum(x[k] * meta[k][3] for k in keys)
-                <= xl_candy_inventory[species_id],
-                f"XLCandy_Species_{species_id}",
+                pulp.lpSum(x[k] * meta[k][3] for k in keys) <= xl_candy_inventory[pool],
+                f"XLCandy_Species_{label}",
             )
 
     # Optional cap on mega-capable Pokemon in the plan.
@@ -392,14 +448,14 @@ def build_and_solve(
     # A Poke Genie export carries no candy counts at all, so importing one and
     # solving produces a plan constrained only by stardust -- correct as far as
     # it goes, and potentially impossible to actually carry out.
-    unbacked: dict[int, tuple[int, int]] = {}
+    unbacked: dict = {}
     for s in selections:
-        sid = s.pokemon.species_id
-        need_candy = s.candy if sid not in candy_inventory else 0
-        need_xl = s.xl_candy if sid not in xl_candy_inventory else 0
+        pool = candy_pool_key(s.pokemon.species_id)
+        need_candy = s.candy if pool not in candy_inventory else 0
+        need_xl = s.xl_candy if pool not in xl_candy_inventory else 0
         if need_candy or need_xl:
-            have = unbacked.get(sid, (0, 0))
-            unbacked[sid] = (have[0] + need_candy, have[1] + need_xl)
+            have = unbacked.get(pool, (0, 0))
+            unbacked[pool] = (have[0] + need_candy, have[1] + need_xl)
 
     return Result(
         status=status,

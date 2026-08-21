@@ -594,7 +594,16 @@ def read_resource_row(img) -> ResourceRow:
     # wrong: mega-capable Pokemon carry an extra Mega Energy element that shifts
     # this row, so any hardcoded fraction reads the wrong column for them.
     labels = _words(_strokes(grey[int(bh * 0.55):int(bh * 0.98), :]))
-    anchor = find_candy_anchor(labels, species)
+    # The label names the evolution family, so look that up before matching.
+    family = None
+    try:
+        from pogo_opt.reference import default_reference
+
+        hit = default_reference().species(species)
+        family = hit.family if hit else None
+    except Exception:
+        family = None
+    anchor = find_candy_anchor(labels, species, family)
     if anchor is None:
         return ResourceRow()
     near = [(abs(anchor - x), v) for x, v in numbers if abs(anchor - x) <= w * 0.15]

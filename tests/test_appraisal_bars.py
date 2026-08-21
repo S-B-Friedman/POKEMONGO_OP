@@ -314,3 +314,25 @@ def test_wrong_species_label_is_rejected():
     assert _anchor_candy(
         [(464, "PIKACHUCANDY")], [(539, 9331)], "Anorith"
     ) is None
+
+
+def test_evolved_pokemon_are_matched_on_their_family():
+    """A Garchomp's screen reads "GIBLE CANDY", never "GARCHOMP CANDY".
+
+    Candy is pooled per evolution family and labelled with the base form, so
+    matching the label against the species name fails for every evolved Pokemon
+    there is. It went unnoticed because the Pokemon this was built against --
+    Swinub, Anorith, Palkia -- are all their own family.
+    """
+    assert find_candy_anchor([(495, "GIBLECANDY")], "Garchomp", "Gible") == 495
+    assert find_candy_anchor([(495, "CHARMANDERCANDY")], "Charizard", "Charmander") == 495
+    assert find_candy_anchor([(495, "BELDUMCANDY")], "Metagross", "Beldum") == 495
+
+
+def test_a_base_form_still_matches_its_own_name():
+    assert find_candy_anchor([(495, "PALKIACANDY")], "Palkia", "Palkia") == 495
+
+
+def test_the_wrong_family_is_still_rejected():
+    """Mid-swipe the previous Pokemon's label can still be on screen."""
+    assert find_candy_anchor([(495, "GIBLECANDY")], "Palkia", "Palkia") is None

@@ -97,6 +97,22 @@ class Reference:
             return None
         return hit
 
+    def family_of(self, dex: int) -> str | None:
+        """The evolution family a dex number belongs to.
+
+        Candy is pooled per family, so this is the real key for a candy stock.
+        Two Pokemon with different dex numbers and the same family -- a Gible
+        and a Garchomp -- spend from one pile.
+        """
+        for s in self._species.values():
+            if s.dex == dex and s.family:
+                return s.family
+        return None
+
+    def family_by_dex(self) -> dict[int, str]:
+        """{dex: family} for every species that has one."""
+        return {s.dex: s.family for s in self._species.values() if s.family}
+
     def __len__(self) -> int:
         return len(self._species)
 

@@ -545,7 +545,7 @@ _MIN_SPECIES_PREFIX = 4
 
 
 def find_candy_anchor(
-    labels: Sequence[tuple[int, str]], species: str
+    labels: Sequence[tuple[int, str]], species: str, family: str | None = None
 ) -> int | None:
     """x of the regular-candy column, located by its label rather than a position.
 
@@ -558,8 +558,14 @@ def find_candy_anchor(
     fraction reads the wrong number for exactly those Pokemon -- and they are
     disproportionately the ones worth investing in.
     """
-    wanted = re.sub(r"[^a-z]", "", (species or "").lower())
-    if not wanted:
+    # The label names the FAMILY, not the Pokemon: a Garchomp's screen reads
+    # "GIBLE CANDY". Matching against the species alone fails for every evolved
+    # Pokemon there is -- the base forms this was built against, Swinub and
+    # Anorith and Palkia, are their own families, which is why it looked right.
+    candidates = {re.sub(r"[^a-z]", "", (n or "").lower())
+                  for n in (family, species)}
+    candidates.discard("")
+    if not candidates:
         return None
 
     anchors = []
@@ -572,7 +578,7 @@ def find_candy_anchor(
         if len(prefix) < _MIN_SPECIES_PREFIX:
             continue
         head = prefix[:_MIN_SPECIES_PREFIX]
-        if wanted.startswith(head) or head in wanted:
+        if any(w.startswith(head) or head in w for w in candidates):
             anchors.append(x)
 
     return min(anchors) if anchors else None
