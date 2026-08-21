@@ -104,6 +104,12 @@ class SolveResponse(BaseModel):
     candy_used: dict[int, int]
     xl_used: dict[int, int]
     binding: list[dict]
+    # False when the plan spends candy for a species whose stock nobody
+    # supplied. The plan is then optimal against stardust alone and may not
+    # be affordable -- a UI should say so rather than present it as a plan.
+    fully_costed: bool
+    unbacked_candy: dict[int, list[int]]
+    candy_warning: str | None = None
 
 
 def _tags(p: PokemonInstance) -> list[str]:
@@ -231,6 +237,9 @@ def solve(req: SolveRequest) -> SolveResponse:
         candy_used=candy_used,
         xl_used=xl_used,
         binding=_binding(result.shadow_prices),
+        fully_costed=result.fully_costed,
+        unbacked_candy={k: list(v) for k, v in result.unbacked_candy.items()},
+        candy_warning=result.candy_warning(),
     )
 
 

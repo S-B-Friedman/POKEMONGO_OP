@@ -31,7 +31,7 @@ stardust budget, one candy budget per species, and a cap on megas.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pulp
 
@@ -171,10 +171,37 @@ class Result:
     stardust_used: int
     stardust_budget: int
     shadow_prices: dict[str, float] | None = None
+    unbacked_candy: dict[int, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def feasible(self) -> bool:
         return self.status == "Optimal"
+
+    @property
+    def fully_costed(self) -> bool:
+        """Whether every resource the plan spends was actually constrained.
+
+        False means the plan is optimal against stardust but is spending candy
+        whose stock nobody supplied, so it may be impossible to execute. See
+        `unbacked_candy`.
+        """
+        return not self.unbacked_candy
+
+    def candy_warning(self) -> str | None:
+        """One line naming what the plan assumes it can afford, or None."""
+        if not self.unbacked_candy:
+            return None
+        worst = sorted(self.unbacked_candy.items(), key=lambda kv: -sum(kv[1]))
+        shown = ", ".join(
+            f"species {sid} needs {c}" + (f" + {x} XL" if x else "")
+            for sid, (c, x) in worst[:4]
+        )
+        more = f", and {len(worst) - 4} more" if len(worst) > 4 else ""
+        return (
+            f"plan spends candy for {len(worst)} species with no known stock "
+            f"({shown}{more}) -- those constraints did not bind, so the plan "
+            f"may not be affordable"
+        )
 
 
 def shadow_prices(prob: pulp.LpProblem) -> dict[str, float]:
@@ -356,6 +383,24 @@ def build_and_solve(
 
     selections.sort(key=lambda s: s.gain, reverse=True)
 
+    # Which species is the plan spending candy on without anyone having said how
+    # much candy exists? Those species got no constraint at all, so the solver
+    # treated their candy as unlimited.
+    #
+    # The guard above rejects a malformed inventory; this reports an ABSENT one,
+    # which is the more dangerous case precisely because it looks like success.
+    # A Poke Genie export carries no candy counts at all, so importing one and
+    # solving produces a plan constrained only by stardust -- correct as far as
+    # it goes, and potentially impossible to actually carry out.
+    unbacked: dict[int, tuple[int, int]] = {}
+    for s in selections:
+        sid = s.pokemon.species_id
+        need_candy = s.candy if sid not in candy_inventory else 0
+        need_xl = s.xl_candy if sid not in xl_candy_inventory else 0
+        if need_candy or need_xl:
+            have = unbacked.get(sid, (0, 0))
+            unbacked[sid] = (have[0] + need_candy, have[1] + need_xl)
+
     return Result(
         status=status,
         selections=selections,
@@ -363,4 +408,5 @@ def build_and_solve(
         stardust_used=sum(s.stardust for s in selections),
         stardust_budget=stardust_budget,
         shadow_prices=shadow_prices(prob) if with_shadow_prices else None,
+        unbacked_candy=unbacked,
     )

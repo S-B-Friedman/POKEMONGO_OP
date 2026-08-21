@@ -176,10 +176,10 @@ def friendship_multipliers(friendship: str | Iterable[str] = "normal") -> tuple[
     the extra information away silently, which is the failure mode this codebase
     keeps rediscovering.
 
-    ASSUMPTION: that the two compose multiplicatively rather than the game
-    applying only the better one. GAME_MASTER settles neither, since it carries
-    no lucky multiplier at all. Multiplicative is the natural reading and the
-    conservative direction is unclear, so it is stated here rather than buried.
+    CONFIRMED multiplicative, not "apply the best one": a lucky purified
+    Pokemon powers up at 0.5 * 0.9 = 0.45 of the normal stardust, i.e. 55% off.
+    GAME_MASTER cannot settle this -- it carries no lucky multiplier at all --
+    so it rests on reported in-game behaviour rather than on the shipped tables.
     """
     states = ({friendship} if isinstance(friendship, str) else set(friendship)) or {"normal"}
 

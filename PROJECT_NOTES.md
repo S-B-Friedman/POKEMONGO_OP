@@ -7,8 +7,8 @@ exists for the things that are expensive to reconstruct from code alone.
 
 ## Where each piece stands
 
-304 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
-**no skips**. 300 need nothing beyond `requirements-dev.txt`; the other 4 are
+307 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 303 need nothing beyond `requirements-dev.txt`; the other 4 are
 the image path, needing OpenCV, Pillow and the tesseract binary, all of which
 CI installs. A test that skips itself is not a test that passed, and the
 summary line does not distinguish them — so the extras are installed rather
@@ -16,7 +16,7 @@ than allowed to quietly disable coverage.
 
 | Component | State | Verified how |
 |---|---|---|
-| Optimizer | Done | 129 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
+| Optimizer | Done | 132 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
 | Image path | Done | 4 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
 | Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (75 tests) |
@@ -127,10 +127,32 @@ to *spend on*, which is a question about improvement per unit cost.
   multiplicatively. Latent on `sample_data`, where nothing is in two states at
   once, so no published figure moved.
 
-  Two things this cannot settle. Whether the game stacks the discounts
-  multiplicatively or applies only the better one — GAME_MASTER has no lucky
-  multiplier at all, so the data is silent. And whether shadow+lucky is truly
-  impossible; it is rejected on the reasoning that shadows cannot be traded.
+  **Confirmed multiplicative**: lucky + purified is 0.5 × 0.9 = 0.45, i.e. 55%
+  off stardust, which is what the code produces. GAME_MASTER cannot settle this
+  — it has no lucky multiplier at all — so it rests on reported in-game
+  behaviour. Still open: whether shadow+lucky is genuinely impossible; it is
+  rejected on the reasoning that shadows cannot be traded.
+
+- **A Poke Genie import supplies no candy, and that is not a small gap.** The
+  export describes Pokémon, not your bag, so `candy_inventory` comes back empty
+  and *every* per-species candy constraint is simply absent. The plan is then
+  optimal against stardust alone and can prescribe upgrades you cannot pay the
+  candy for.
+
+  This is the failure mode `model.py` already calls the worst one it has: a
+  constraint that silently stops binding looks exactly like a satisfied one. It
+  is now reported — `Result.fully_costed`, `Result.unbacked_candy`, a warning
+  from `run.py`, and `fully_costed` / `candy_warning` on `POST /solve`.
+
+  Worth knowing how little the bundled sample exercises this: candy binds only
+  at an 800,000 stardust budget. Below that, solving with and without the candy
+  file gives identical results, so `sample_data` cannot demonstrate the
+  constraint that the whole design is built around. A real collection at high
+  level, where XL is scarce, is where it bites.
+
+  The candy counts are on screen — the Appraise-adjacent detail view shows
+  "1,645 SWINUB CANDY" and "293 SWINUB CANDY XL" — so OCR could fill them in.
+  Until then they have to be entered.
 
 - **The purified candy discount mostly rounds away.** Per-step candy is small
   and the code takes `ceil`, so `ceil(8 * 0.9) == 8`: the 10% discount is
@@ -194,20 +216,24 @@ The items below are still open *elsewhere* and are kept so they don't get lost.
 
 ## Next up
 
-1. Point the API at `db.py` instead of the in-memory `STATE` dict. The schema
+1. Get candy counts in from somewhere. They are the second resource the whole
+   model is built around, and no import path supplies them. The numbers are on
+   the Pokemon detail screen, so OCR is the obvious route; `PUT /candy` and
+   `--candy` already accept them by hand in the meantime.
+2. Point the API at `db.py` instead of the in-memory `STATE` dict. The schema
    and its tests already exist and are already scoped by `trainer_id`.
-2. Name and CP OCR against real frames. The bars now read correctly from a real
+3. Name and CP OCR against real frames. The bars now read correctly from a real
    capture, but nothing else on the screen has ever been run through OCR on
    real pixels — only synthetic images. That is the next thing that will be
    wrong in a way the tests cannot see.
-3. Grid tile geometry — the grid is regular, so slice deterministically from a
+4. Grid tile geometry — the grid is regular, so slice deterministically from a
    calibrated pitch and origin rather than detecting contours.
-4. Scroll tracking: phase-correlate consecutive frames, accumulate global Y,
+5. Scroll tracking: phase-correlate consecutive frames, accumulate global Y,
    assign each tile a global (row, col). Every slot is exactly one Pokémon,
    which is how duplicates collapse correctly even with two same-species
    same-CP Pokémon.
-5. Wire `ocr_ingest.py` to write into SQLite instead of CSV.
-6. Later: type effectiveness as a coverage portfolio.
+6. Wire `ocr_ingest.py` to write into SQLite instead of CSV.
+7. Later: type effectiveness as a coverage portfolio.
 
 Also worth one in-game check whenever convenient: a shadow's Power Up cost
 against a non-shadow at the same level, which settles `SHADOW_COST_SURCHARGE`.
