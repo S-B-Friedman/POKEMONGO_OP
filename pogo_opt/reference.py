@@ -38,6 +38,12 @@ class Species:
     type1: str
     type2: str | None
     mega: bool
+    # The evolution family's base form. Candy is pooled per family and the game
+    # labels it that way -- a Garchomp's screen reads "GIBLE CANDY" -- so this
+    # is what a candy label has to be matched against, and what a candy stock is
+    # really keyed by. Defaulted so a reference.json built before this field
+    # existed still loads.
+    family: str = ""
 
 
 @dataclass(frozen=True)

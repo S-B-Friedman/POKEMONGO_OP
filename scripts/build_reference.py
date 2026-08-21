@@ -131,6 +131,11 @@ def extract_species(gm: list) -> dict:
                        .replace("POKEMON_TYPE_", "").lower(),
             "type2": (ps.get("type2") or "").replace("POKEMON_TYPE_", "").lower() or None,
             "mega": bool(ps.get("tempEvoOverrides") or ps.get("temporaryEvolutions")),
+            # Candy is per evolution FAMILY, and the game labels it with the
+            # family's base form: a Garchomp's screen reads "GIBLE CANDY", not
+            # "GARCHOMP CANDY". Without this the candy label cannot be matched
+            # to the Pokemon showing it, for any evolved Pokemon at all.
+            "family": _title((ps.get("familyId") or "").replace("FAMILY_", "")),
         }
         # A plain-form entry wins over a later same-key duplicate.
         species.setdefault(key, record)
