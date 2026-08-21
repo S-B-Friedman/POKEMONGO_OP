@@ -227,3 +227,31 @@ def test_missing_xl_is_none_not_zero():
     labels = [(180, "STARDUST"), (502, "SWINUB"), (650, "CANDY")]
     r = parse_resource_row(REAL_VALUES[:2], labels)
     assert r.xl_candy is None
+
+
+def test_majority_wins_over_a_corrupted_reading():
+    """Cross-frame voting, which is not optional for the resource row.
+
+    On one short clip Anorith read {63, 631, 631, 6315} across four frames and
+    Meowth {4, 4351, 4351, 4357}. Taking the maximum or the first picks a
+    corrupted value in both cases. Only the majority picks the right one.
+    """
+    from collections import Counter
+
+    for readings, expected in (
+        ([63, 631, 631, 6315], 631),
+        ([4, 4351, 4351, 4357], 4351),
+        ([1645] * 12 + [164], 1645),
+    ):
+        assert Counter(readings).most_common(1)[0][0] == expected
+
+
+def test_a_single_frame_is_not_enough_to_trust():
+    """One reading is a coin flip on whether a digit was dropped."""
+    from collections import Counter
+
+    counter = Counter([63, 631])
+    value, agreeing = counter.most_common(1)[0]
+    assert agreeing < sum(counter.values()) / 2 + 1, (
+        "a 1-1 split must not be treated as a majority"
+    )

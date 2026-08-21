@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -465,19 +466,71 @@ def _text_mask(img, max_value: int):
     return (255 - keep.astype(np.uint8) * 255)
 
 
-def _words(band, scale: int = 3) -> list[tuple[int, str]]:
-    """-> [(x_in_original_pixels, token)] for one strip."""
+# Column centres as fractions of screen width, measured off a capture where the
+# labels were legible. Used only when the labels are NOT legible -- on the
+# appraisal overlay the row is dimmed to within ~6 grey levels of its
+# background, so the numbers survive and the labels do not.
+_COLUMN_FRACTIONS = {"stardust": 0.20, "candy": 0.50, "xl_candy": 0.82}
+
+
+def _strokes(band, scale: int = 3):
+    """Isolate text strokes from whatever is behind them.
+
+    A global threshold works on the white info card and fails completely on the
+    appraisal overlay, where the same row is drawn over a blue gradient, a team
+    leader's face and a rating badge. A black-hat keeps dark detail smaller than
+    the kernel -- letter strokes -- and discards the smooth backgrounds, which
+    handles both without knowing which one it is looking at.
+    """
     import cv2
+
+    big = cv2.resize(band, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (45, 45))
+    hat = cv2.morphologyEx(big, cv2.MORPH_BLACKHAT, kernel)
+    hat = cv2.normalize(hat, None, 0, 255, cv2.NORM_MINMAX)
+    _, th = cv2.threshold(hat, 60, 255, cv2.THRESH_BINARY)
+    return 255 - th
+
+
+def _words(band, scale: int = 3, psm: int = 6) -> list[tuple[int, str]]:
+    """-> [(x_in_original_pixels, token)] for one already-prepared strip."""
     import pytesseract
     from pytesseract import Output
 
-    big = cv2.resize(band, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    data = pytesseract.image_to_data(big, config="--psm 6", output_type=Output.DICT)
+    data = pytesseract.image_to_data(
+        band, config=f"--psm {psm}", output_type=Output.DICT
+    )
     return [
         (data["left"][i] // scale, t.strip())
         for i, t in enumerate(data["text"])
         if t.strip()
     ]
+
+
+def read_species_name(img, known_names=None) -> str | None:
+    """The species (or nickname) from the top of the info card.
+
+    Read separately from the resource row on purpose. The row's labels carry the
+    species too -- "SWINUB CANDY" -- but they are the first thing to disappear
+    when the appraisal overlay dims the screen, while this stays legible. Taking
+    the identity from here and only the numbers from the row is what lets the
+    same code read both screens.
+    """
+    import cv2
+
+    h, w = img.shape[:2]
+    band = cv2.cvtColor(
+        img[int(h * 0.40):int(h * 0.46), int(w * 0.15):int(w * 0.85)],
+        cv2.COLOR_BGR2GRAY,
+    )
+    text = " ".join(t for _, t in _words(_strokes(band), psm=7))
+    if not text.strip():
+        return None
+    if known_names:
+        return match_species_name(text, known_names)
+    # Nicknames are common ("Pikachu96"), so keep the leading alphabetic run.
+    m = re.match(r"[A-Za-z][A-Za-z'.\- ]{2,}", text.strip())
+    return m.group(0).strip() if m else None
 
 
 def read_resource_row(img) -> ResourceRow:
@@ -493,31 +546,81 @@ def read_resource_row(img) -> ResourceRow:
     _require("pytesseract", "pytesseract")
     import cv2
 
-    h = img.shape[0]
+    h, w = img.shape[:2]
     top, bottom = int(h * _RESOURCE_BAND[0]), int(h * _RESOURCE_BAND[1])
     bh = bottom - top
+    # The clean info card: dark teal text on white, icons removed by hue. This
+    # reads all three columns, and reads them exactly, so it is tried first.
+    values = _words(_text_mask(img, _VALUE_MAX_VALUE)[top:bottom, :][
+        int(bh * 0.20):int(bh * 0.55), :])
+    labels = _words(_text_mask(img, _LABEL_MAX_VALUE)[top:bottom, :][
+        int(bh * 0.55):int(bh * 0.98), :])
 
-    value_band = _text_mask(img, _VALUE_MAX_VALUE)[top:bottom, :]
-    label_band = _text_mask(img, _LABEL_MAX_VALUE)[top:bottom, :]
+    row = parse_resource_row(values, labels)
+    if row.usable:
+        return row
 
-    values = _words(value_band[int(bh * 0.20):int(bh * 0.55), :])
-    labels = _words(label_band[int(bh * 0.55):int(bh * 0.98), :])
+    grey = cv2.cvtColor(img[top:bottom, :], cv2.COLOR_BGR2GRAY)
 
-    return parse_resource_row(values, labels)
+    # The labels went unread. On the appraisal overlay they are dimmed to within
+    # a few grey levels of their background while the numbers survive, so fall
+    # back to fixed column positions and take the identity from the name at the
+    # top of the card instead. Guessing the columns is only safe because the
+    # layout is fixed; guessing the species never would be, so a frame with no
+    # readable name yields nothing.
+    species = read_species_name(img)
+    if not species:
+        return ResourceRow()
+
+    # Search the whole band, not the value sub-slice the clean path uses. The
+    # overlay shifts the row slightly, and slicing to where the numbers sit on
+    # the info card cut Pikachu's 9,331 out of frame entirely.
+    dimmed = _words(_strokes(grey))
+    # Strip punctuation the black-hat leaves stuck to a token -- "631+" was a
+    # clean 631 with a stray mark welded on. The digits themselves still have to
+    # match exactly afterwards; this trims the edges, it does not loosen the
+    # match.
+    numbers = []
+    for x, token in dimmed:
+        trimmed = token.strip("+-.'|\"_*~ ")
+        if re.fullmatch(r"\d[\d,]*", trimmed):
+            numbers.append((x, int(trimmed.replace(",", ""))))
+
+    # ONLY the candy column is taken here. On this screen the rating badge sits
+    # over the stardust figure and the team leader stands over the XL one, so
+    # both come back truncated -- a 521,865 read as 45, a 293 read as 2. Those
+    # are not low-confidence readings, they are confident readings of a partly
+    # hidden number, which is the one kind of output this pipeline must not
+    # produce. Candy sits between the two and stays clear.
+    centre = int(w * _COLUMN_FRACTIONS["candy"])
+    near = [(abs(centre - x), v) for x, v in numbers if abs(centre - x) <= w * 0.10]
+    if not near:
+        return ResourceRow()
+    return ResourceRow(species=species, candy=min(near)[1])
 
 
 def scan_resource_rows(frames, ref=None, sample_every: int = 5) -> dict[int, ResourceRow]:
     """Read every detail screen in a frame sequence -> {species_id: ResourceRow}.
 
     Frames that are not a detail view read as empty and are skipped, so a
-    scroll-through can be fed in whole. Where the same species appears more than
-    once the highest candy count wins, on the assumption that a partially
-    rendered frame under-reads rather than over-reads.
+    scroll-through can be fed in whole.
+
+    Where a species appears on several frames the MAJORITY reading wins. This is
+    the same trick the rest of the pipeline uses -- a few seconds of video is
+    dozens of frames of one screen -- and it is not optional here. A single
+    frame's OCR drops or doubles a digit often enough to matter: across one
+    short clip Anorith read {63, 631, 631, 6315} and Meowth {4, 4351, 4351,
+    4357}. Taking the maximum, or the first, picks the corrupted value in both
+    cases; the majority picks the right one.
     """
+    from collections import Counter
+
     from pogo_opt.reference import default_reference
 
     ref = ref or default_reference()
-    out: dict[int, ResourceRow] = {}
+    votes: dict[int, Counter] = {}
+    seen: dict[int, ResourceRow] = {}
+
     for i, img in enumerate(frames):
         if i % sample_every:
             continue
@@ -528,9 +631,17 @@ def scan_resource_rows(frames, ref=None, sample_every: int = 5) -> dict[int, Res
         if species is None:
             log.warning("resource row names %r, which is not in the reference", row.species)
             continue
-        prev = out.get(species.dex)
-        if prev is None or (row.candy or 0) > (prev.candy or 0):
-            out[species.dex] = row
+        votes.setdefault(species.dex, Counter())[(row.candy, row.xl_candy)] += 1
+        seen.setdefault(species.dex, row)
+
+    out: dict[int, ResourceRow] = {}
+    for dex, counter in votes.items():
+        (candy, xl), agreeing = counter.most_common(1)[0]
+        total = sum(counter.values())
+        if agreeing < total / 2:
+            log.warning("no majority candy reading for species %d: %r", dex, dict(counter))
+            continue
+        out[dex] = ResourceRow(species=seen[dex].species, candy=candy, xl_candy=xl)
     return out
 
 
