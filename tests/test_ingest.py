@@ -364,3 +364,34 @@ def test_verification_declines_without_the_numbers_it_needs():
                          attack_iv=15, defense_iv=14, stamina_iv=15)
     verify_record(rec, [7])
     assert rec.cp == 7
+
+
+def test_a_nicknamed_pokemon_is_recovered_from_its_numbers():
+    """A nickname is not a species name, so the matcher declines -- and that
+    used to cost the whole record, since is_usable needs a name.
+
+    Dragonite at 15/14/15, level 38: CP 3675 with HP 174 is produced by exactly
+    one species in the reference, so the name is recoverable without the text.
+    """
+    rec = ScannedPokemon(name=None, cp=None, total_hp=174,
+                         attack_iv=15, defense_iv=14, stamina_iv=15)
+    verify_record(rec, [3675])
+    assert rec.name == "Dragonite"
+    assert rec.cp == 3675
+    assert any("recovered from CP/HP" in w for w in rec.warnings)
+
+
+def test_an_ambiguous_spread_is_left_unnamed():
+    """Blaziken at 15/15/15 level 40 shares CP 2848 / HP 162 with Leavanny.
+
+    Two candidates is not an answer. Naming it anyway would be the confident
+    wrong answer the whole propose-and-verify design exists to prevent, and a
+    name is what everything downstream keys on.
+    """
+    rec = ScannedPokemon(name=None, cp=None, total_hp=162,
+                         attack_iv=15, defense_iv=15, stamina_iv=15)
+    verify_record(rec, [2848])
+    assert rec.name is None
+    assert any("consistent with CP/HP" in w for w in rec.warnings)
+    # The alternatives are named so a human can settle it.
+    assert any("Blaziken" in w for w in rec.warnings)

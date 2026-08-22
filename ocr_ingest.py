@@ -401,6 +401,58 @@ def iter_video_frames(video_path: Path, every_n: int, work_dir: Path,
 # Driver
 # --------------------------------------------------------------------------
 
+def _name_from_numbers(rec: ScannedPokemon, candidates) -> ScannedPokemon:
+    """Recover an unread species from the CP, HP and IVs alone.
+
+    A nickname is not a species name, so the matcher declines on them -- rightly,
+    since forcing "Sanji 100" onto the nearest species is the confident wrong
+    answer this pipeline exists to avoid. But declining used to cost the whole
+    record: is_usable needs a name, so every renamed Pokemon was dropped.
+
+    The numbers still identify it. species_consistent_with() asks which species
+    can produce a given CP and HP at some level for these IVs, and on real
+    readings that cuts 1,486 to a handful. A name is taken only when exactly one
+    survives across every CP candidate; anything ambiguous is left unnamed, which
+    is the state the record was already in. Recovering the wrong name would be
+    worse than recovering none, because a name is what everything downstream
+    keys on.
+    """
+    try:
+        from pogo_opt.reference import default_reference
+        from pogo_opt.resolve import species_consistent_with
+
+        pool = list(default_reference()._species.values())
+    except Exception:
+        return rec
+
+    # (species, cp) pairs the arithmetic allows. The CP comes along for free:
+    # whichever candidate produced the match is a CP that verifies by
+    # construction, so an unnamed record can gain both fields at once.
+    allowed: set[tuple[str, int]] = set()
+    for cp in dict.fromkeys(c for c in candidates if c):
+        for name, _level in species_consistent_with(
+            pool, rec.attack_iv, rec.defense_iv, rec.stamina_iv,
+            cp, rec.total_hp,
+        ):
+            allowed.add((name, cp))
+
+    names = {name for name, _ in allowed}
+    if len(names) != 1:
+        if names:
+            rec.warnings.append(
+                f"species not named: {len(names)} consistent with CP/HP "
+                f"({', '.join(sorted(names)[:4])})"
+            )
+        return rec
+
+    rec.name = next(iter(names))
+    cps = {cp for _, cp in allowed}
+    if len(cps) == 1:
+        rec.cp = next(iter(cps))
+    rec.warnings.append(f"species {rec.name} recovered from CP/HP, not from text")
+    return rec
+
+
 def verify_record(rec: ScannedPokemon, candidates) -> ScannedPokemon:
     """Referee a voted record against the arithmetic, in place.
 
@@ -415,10 +467,12 @@ def verify_record(rec: ScannedPokemon, candidates) -> ScannedPokemon:
     observed HP is removed and said out loud, because no CP is worth more than a
     wrong one.
     """
-    if not rec.name or rec.total_hp is None:
+    if rec.total_hp is None:
         return rec
     if None in (rec.attack_iv, rec.defense_iv, rec.stamina_iv):
         return rec
+    if not rec.name:
+        return _name_from_numbers(rec, candidates)
 
     try:
         from pogo_opt.reference import default_reference
