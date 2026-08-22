@@ -1160,41 +1160,62 @@ def scan_resource_rows(frames, ref=None, sample_every: int = 5) -> dict[int, Res
     return out
 
 
-# The appraisal overlay covers the resource row with fixed furniture: a rating
-# badge on the left (x 0.14-0.29) and the team leader on the right (x 0.58+).
-# Between them is a clear window, and because both are OVERLAY -- fixed to the
-# screen, not to the card -- that window stays put while the card slides through
-# it during a swipe.
+# The appraisal overlay covers the resource row with furniture fixed to the
+# SCREEN, not to the card: a rating badge on the left and the team leader in the
+# middle. What is legible is whatever is not behind them, and that is not one
+# window -- on a 1080x1920 capture the candy column reads to the left of the
+# leader and the XL column never emerges, while on a 1206x2622 capture the two
+# straddle him and BOTH read from the same frame.
 #
-# That is what makes candy readable here at all. Sitting still, a mega-capable
-# Pokemon's candy figure is behind the leader's head and simply absent from the
-# pixels. Mid-swipe it slides into the clear and reads exactly.
+# So the crop follows the numbers rather than a fixed gap. The label starts at
+# roughly the number's left edge and runs right; measured on both devices, a
+# span from x - 0.09w to x + 0.17w frames it and stops short of the face:
 #
-# The window is narrow on purpose. Widening it by 20px in either direction pulls
-# in the badge fringe or the face, and tesseract then returns "SE" for a label
-# that reads "GIBLE CANDY" when cropped to the gap.
-_OVERLAY_WINDOW = (0.33, 0.58)
+#     1080 wide: number at x=453, label legible over 356-626  (-0.090w, +0.160w)
+#     1206 wide: number at x=522, label legible over 434-724  (-0.073w, +0.167w)
+#
+# The span still has to be tight. Widen it and the badge fringe or the face comes
+# in, and tesseract returns "SE" for a label that reads "GIBLE CANDY" when
+# cropped close. That is a property of page segmentation, not of the threshold,
+# so no preprocessing rescues a crop that includes the leader.
+_LABEL_SPANS = ((-0.09, 0.17), (-0.01, 0.15), (0.02, 0.20))
 
 # Offsets from a candidate value line to the label beneath it, as fractions of
 # screen height. Searched rather than fixed: the first frame that yields a candy
 # label locks the offset in, and the rest of the capture reuses it.
-_OVERLAY_LABEL_OFFSETS = (0.017, 0.021, 0.025)
+_OVERLAY_LABEL_OFFSETS = (0.016, 0.019, 0.022, 0.025)
 _OVERLAY_ROW_SEARCH = (0.60, 0.76)
 
 
-def _read_window(img, y0: int, y1: int, scale: int = 5, psm: int = 7) -> str:
-    """OCR one narrow crop of the overlay's clear window."""
+def _read_label(img, x: int, y0: int, y1: int, span, scale: int = 5,
+                psm: int = 7) -> str:
+    """OCR the label crop belonging to a number at `x`, over one span."""
     import cv2
     import pytesseract
 
     h, w = img.shape[:2]
-    crop = img[max(0, y0):min(h, y1),
-               int(w * _OVERLAY_WINDOW[0]):int(w * _OVERLAY_WINDOW[1])]
-    if crop.size == 0:
+    x0 = max(0, int(x + w * span[0]))
+    x1 = min(w, int(x + w * span[1]))
+    crop = img[max(0, y0):min(h, y1), x0:x1]
+    if crop.size == 0 or x1 <= x0:
         return ""
     big = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), None,
                      fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     return pytesseract.image_to_string(big, config=f"--psm {psm}").strip()
+
+
+def _family_stem(flat: str) -> str:
+    """The family name from a label, as the PREFIX before the candy word.
+
+    Stripping a fixed list of words does not survive OCR: the trailing "CANDY"
+    comes back as "CANL" or "CANE" often enough to matter, and the leftover
+    letters drag a fuzzy match below its cutoff -- "TAUROSCANL" scores 0.75
+    against "TAUROS" and was thrown away. The layout is "<FAMILY> CANDY [XL]",
+    so the name is whatever precedes the candy word, however badly that word
+    was read.
+    """
+    index = flat.find("CAN")
+    return flat[:index] if index > 0 else flat
 
 
 def scan_overlay_candy(frames, ref=None) -> dict[int, ResourceRow]:
@@ -1249,18 +1270,26 @@ def scan_overlay_candy(frames, ref=None) -> dict[int, ResourceRow]:
 
             # Then read only the line beneath that number. Cropped to the clear
             # window it reads; widened into the badge or the face it does not.
-            label = ""
+            # Several offsets and several spans. The label sits a little below
+            # the number and starts near its left edge, but how far the crop can
+            # reach before it hits the team leader depends on which column this
+            # is and on the screen's shape -- on one device the XL label sits
+            # immediately right of his head, so a span generous enough for the
+            # candy column swallows his hair and reads nothing.
+            species = None
+            flat = ""
             for off in _OVERLAY_LABEL_OFFSETS:
-                label = _read_window(img, int(top + y + h * off),
-                                     int(top + y + h * (off + 0.022)))
-                if "CAND" in re.sub(r"[^A-Z]", "", label.upper()):
+                for span in _LABEL_SPANS:
+                    label = _read_label(img, x, int(top + y + h * off),
+                                        int(top + y + h * (off + 0.022)), span)
+                    flat = re.sub(r"[^A-Z]", "", label.upper())
+                    if "CAN" not in flat:
+                        continue
+                    species = _match_family(_family_stem(flat), families)
+                    if species is not None:
+                        break
+                if species is not None:
                     break
-            flat = re.sub(r"[^A-Z]", "", label.upper())
-            if "CAND" not in flat:
-                continue
-
-            stem = flat.replace("XL", "").replace("CANDY", "").replace("CAND", "")
-            species = _match_family(stem, families)
             if species is None:
                 continue
             votes.setdefault((species.family, "XL" in flat), Counter())[value] += 1
