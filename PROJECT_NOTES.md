@@ -207,10 +207,25 @@ to *spend on*, which is a question about improvement per unit cost.
   together as often as not: it read the candy column as one `SWINUBCANDY` token
   while reading the XL column as `SWINUB` + `CANDY`. Matching labels on equality
   with "CANDY" therefore saw one candy column — the XL one — took it for the
-  ordinary one, and reported Swinub's 293 XL candy as 293 candy. Every field
-  populated, nothing to flag, and a candy budget three times too small. Matching
-  on containment fixes it; a lone column carrying the XL mark is now reported as
-  XL with no candy, rather than mislabelled.
+  ordinary one, and returned Swinub's 293 XL candy as 293 candy.
+
+  What that cost end to end is worth stating exactly, because it is not what it
+  looks like. `scan_resource_rows` threw the row away: the same merge that broke
+  the column also contaminated the species name to `Swinubcandy`, which is not
+  in the reference. So the observed damage was a *dropped* row, not a wrong
+  budget — the pipeline failed closed.
+
+  It failed closed by luck, though, not by design. Species was taken from the
+  first label word long enough to be a name, so had tesseract emitted the XL
+  column's clean `SWINUB` before the merged token, the species would have passed
+  the reference check and the wrong candy count would have gone straight into
+  the inventory with nothing to flag it. The ordering that saved it is not a
+  property anyone chose.
+
+  Matching on containment fixes the column; a lone column carrying the XL mark
+  is now reported as XL with no candy rather than mislabelled; and the species
+  is recovered by stripping the fixed words off whatever tesseract ran together,
+  so it no longer depends on which token came first.
 
   The throughput limit is the real one though. One detail screen shows one
   species, so a collection needs one screen per species — a 7.7s clip yielded
