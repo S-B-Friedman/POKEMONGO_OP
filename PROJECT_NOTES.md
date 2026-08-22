@@ -7,8 +7,8 @@ exists for the things that are expensive to reconstruct from code alone.
 
 ## Where each piece stands
 
-307 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
-**no skips**. 303 need nothing beyond `requirements-dev.txt`; the other 4 are
+341 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 337 need nothing beyond `requirements-dev.txt`; the other 4 are
 the image path, needing OpenCV, Pillow and the tesseract binary, all of which
 CI installs. A test that skips itself is not a test that passed, and the
 summary line does not distinguish them — so the extras are installed rather
@@ -16,11 +16,11 @@ than allowed to quietly disable coverage.
 
 | Component | State | Verified how |
 |---|---|---|
-| Optimizer | Done | 132 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
+| Optimizer | Done | 137 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
 | Image path | Done | 4 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
 | Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (75 tests) |
-| Level solver | Done | 26 tests; round-trips across levels and IV spreads |
+| Level solver | Done | 31 tests; round-trips across levels and IV spreads |
 | Frame voting | Done | Survives corrupted frames in synthetic runs |
 | SQLite schema | Done, **not wired** | 23 tests: scoping, cascades, constraints |
 | Parsing layer | Done | 24 tests, no images or API keys needed |
