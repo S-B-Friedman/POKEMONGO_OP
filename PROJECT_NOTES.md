@@ -169,6 +169,15 @@ to *spend on*, which is a question about improvement per unit cost.
   repeated number as two independent stocks. The six new tests were checked
   against the unfixed code first: all six fail there.
 
+  **One instance is still live and deliberately unfixed.** `pogo_opt/db.py`
+  returns candy keyed by `dex`, not by family. Nothing calls it — the DB is not
+  wired — so it is not a bug today, but it is a landmine for the "swap `STATE`
+  for `db.py`" step: a trainer with rows for both a Gible and a Garchomp would
+  hand `build_and_solve` two counts for one pile and get the same refusal
+  `PUT /candy` used to trigger. Fix it as part of wiring the DB, where the
+  schema question (store per family, or per species and pool on read?) can be
+  answered properly rather than patched at the boundary.
+
   Worth drawing the general lesson, since this is the third instance. Changing
   what a mapping is keyed by is not a local edit. Each time, the lookup was
   re-keyed and one caller was not, and each time the result read as success
