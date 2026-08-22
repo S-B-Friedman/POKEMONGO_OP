@@ -231,3 +231,64 @@ def test_wrong_ivs_reject_a_correct_cp():
     """The check is only as good as the IVs, and it fails closed."""
     wrong = dict(PIKACHU, attack_iv=0, defense_iv=0, stamina_iv=0)
     assert verify_cp(candidates=[292], **wrong) is None
+
+
+# --------------------------------------------------------------------------
+# The species name is checked too
+# --------------------------------------------------------------------------
+#
+# The name was the one field with nothing to verify it against, so misreads
+# survived -- a real recording returned Toxtricity, Frigibax and Shaymin for
+# Pokemon that were none of those. But it is not unconstrained: base stats
+# produce the CP and HP, so the numbers rule out nearly every species before
+# the text is consulted. On real readings that cut 1,486 species to 4 and to 2.
+
+from pogo_opt.resolve import species_consistent_with, verify_species  # noqa: E402
+
+
+class _Sp:
+    def __init__(self, name, a, d, s):
+        self.name, self.base_attack, self.base_defense, self.base_stamina = name, a, d, s
+
+
+PIKACHU_SP = _Sp("Pikachu", 112, 96, 111)
+DECOYS = [_Sp("Golduck", 194, 176, 190), _Sp("Tyrunt", 176, 147, 151),
+          _Sp("Dreepy", 88, 88, 74)]
+ALL = [PIKACHU_SP] + DECOYS
+
+
+def test_numbers_narrow_the_species_before_the_text_is_consulted():
+    hits = species_consistent_with(ALL, 15, 14, 14, cp=292, hp=55)
+    assert ("Pikachu", 11.0) in hits
+
+
+def test_a_readable_name_decides_within_the_allowed_set():
+    v = verify_species("Pikachu76", ALL, 15, 14, 14, cp=292, hp=55)
+    assert v.decided and v.name == "Pikachu" and v.level == 11.0
+    assert v.from_text
+
+
+def test_a_misread_outside_the_allowed_set_cannot_win():
+    """"Toxtricity" was a real misread. It must not be able to override the
+    arithmetic -- at most it fails to decide."""
+    v = verify_species("Toxtricity", ALL, 15, 14, 14, cp=292, hp=55)
+    assert v.name != "Toxtricity"
+
+
+def test_ambiguity_is_reported_rather_than_coin_flipped():
+    """With no usable text and several survivors, returning the first is a
+    guess wearing a result's clothes -- it picked Nosepass for an Anorith."""
+    v = verify_species("", ALL, 15, 14, 14, cp=292, hp=55)
+    if len(v.consistent) > 1:
+        assert not v.decided and v.name is None
+        assert "Pikachu" in v.consistent
+
+
+def test_a_single_survivor_needs_no_text():
+    only = [PIKACHU_SP]
+    v = verify_species("", only, 15, 14, 14, cp=292, hp=55)
+    assert v.decided and v.name == "Pikachu" and not v.from_text
+
+
+def test_numbers_no_species_can_produce_return_none():
+    assert verify_species("Pikachu", ALL, 15, 14, 14, cp=99999, hp=55) is None

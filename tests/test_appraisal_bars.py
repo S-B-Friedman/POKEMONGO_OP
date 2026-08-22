@@ -207,6 +207,58 @@ def test_xl_column_survives_a_missed_second_candy():
     assert parse_resource_row(REAL_VALUES, labels).xl_candy == 293
 
 
+def test_a_merged_candy_label_does_not_hand_back_the_xl_count():
+    """Regression, and the worst kind this row can produce.
+
+    Tesseract ran the middle column together as one "SWINUBCANDY" token while
+    reading the XL column as two. Matching labels on equality with "CANDY" then
+    saw exactly one candy column -- the XL one -- took it for the ordinary one,
+    and reported Swinub's 293 XL candy as 293 candy. Every field was populated
+    and the row looked clean, which is what made it dangerous.
+    """
+    labels = [(180, "STARDUST"), (502, "SWINUBCANDY"),
+              (871, "SWINUB"), (985, "XL"), (1019, "CANDY")]
+    r = parse_resource_row(REAL_VALUES, labels)
+    assert r.species == "Swinub"
+    assert (r.candy, r.xl_candy) == (1645, 293)
+
+
+def test_a_lone_xl_column_is_not_reported_as_candy():
+    """Only the XL column was legible. There is no candy count to give, and
+    naming the XL one "candy" spends a budget the trainer does not have."""
+    labels = [(180, "STARDUST"), (871, "SWINUBCANDYXL")]
+    r = parse_resource_row(REAL_VALUES, labels)
+    assert r.candy is None
+    assert r.xl_candy == 293
+    assert not r.usable
+
+
+def test_an_icon_welded_onto_stardust_is_rejected():
+    """The stardust icon reads as a leading "1": 521,865 -> "1521,865".
+
+    A permissive digits-and-commas rule banks that as 1,521,865 and hands the
+    solver three times the stardust it has. The game groups in threes, so a
+    separator in the wrong place is proof the token is not a number it wrote.
+    """
+    r = parse_resource_row([(141, "1521,865")] + REAL_VALUES[1:], REAL_LABELS)
+    assert r.stardust is None
+    assert r.candy == 1645
+
+
+def test_a_period_reads_as_a_thousands_separator():
+    """Upscaled thin strips turn the comma into a period. Nothing in this row
+    is a fractional quantity, so "1.645" can only be 1,645."""
+    values = [(141, "521.865"), (574, "1.645"), (962, "293")]
+    r = parse_resource_row(values, REAL_LABELS)
+    assert (r.stardust, r.candy, r.xl_candy) == (521865, 1645, 293)
+
+
+def test_a_weight_is_not_mistaken_for_a_resource():
+    """The same leniency must not swallow "3.34" off the weight line above."""
+    r = parse_resource_row([(141, "3.34"), (574, "0.31")], REAL_LABELS)
+    assert r.stardust is None and r.candy is None
+
+
 def test_a_non_detail_screen_reads_as_nothing():
     """Most frames of a scroll-through are not a detail view."""
     r = parse_resource_row([(100, "42")], [(100, "FAVORITE")])
