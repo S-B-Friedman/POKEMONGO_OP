@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass, field
+from difflib import get_close_matches
 from statistics import median
 from typing import Iterable
 
@@ -385,3 +386,100 @@ def verify_cp(
         if best is None or (verdict.unambiguous and not best.unambiguous):
             best = verdict
     return best
+
+
+@dataclass(frozen=True)
+class SpeciesVerdict:
+    """Which species the numbers allow, and which the OCR text prefers."""
+
+    name: str | None           # None when nothing could decide between them
+    level: float | None
+    consistent: list[str]      # everything the arithmetic permits
+    from_text: bool            # whether the OCR text picked it, or arithmetic alone
+
+    @property
+    def unambiguous(self) -> bool:
+        return len(self.consistent) == 1
+
+    @property
+    def decided(self) -> bool:
+        return self.name is not None
+
+
+def species_consistent_with(
+    candidates,
+    attack_iv: int, defense_iv: int, stamina_iv: int,
+    cp: int, hp: int,
+):
+    """Every species whose base stats can produce this CP and HP at some level.
+
+    `candidates` is an iterable of objects with name/base_attack/base_defense/
+    base_stamina, i.e. reference.Species. Passed in rather than imported so this
+    module stays free of the data layer.
+
+    This is far more discriminating than it sounds: on real readings it cut
+    1,486 species to 4 and to 2. CP folds attack, defense and stamina together
+    while HP pins stamina alone, so the pair is a tight joint constraint.
+    """
+    out = []
+    for sp in candidates:
+        for level in all_levels():
+            if hp_at(sp.base_stamina, stamina_iv, level) != hp:
+                continue
+            if cp_at(sp.base_attack, sp.base_defense, sp.base_stamina,
+                     attack_iv, defense_iv, stamina_iv, level) != cp:
+                continue
+            out.append((sp.name, level))
+            break
+    return out
+
+
+def verify_species(
+    ocr_text: str,
+    candidates,
+    attack_iv: int, defense_iv: int, stamina_iv: int,
+    cp: int, hp: int,
+    cutoff: float = 0.6,
+) -> SpeciesVerdict | None:
+    """Decide the species from the numbers first, the OCR text second.
+
+    The name was the one field with nothing to check it against, so a misread
+    survived -- a real recording returned Toxtricity, Frigibax and Shaymin for
+    Pokemon that were none of those. But the name is not actually unconstrained:
+    base stats produce the CP and HP, so the observed numbers rule out almost
+    every species before the text is consulted at all.
+
+    Order matters. The arithmetic proposes a short list, and the text only
+    chooses within it. A misread that lands outside the list cannot win, which
+    is exactly the failure this is here to stop.
+
+    Falls back to the arithmetic alone when the text matches nothing, and says
+    so via `from_text` -- with `consistent` carrying the alternatives so a
+    caller can surface the ambiguity instead of pretending there is none.
+    """
+    allowed = species_consistent_with(
+        candidates, attack_iv, defense_iv, stamina_iv, cp, hp
+    )
+    if not allowed:
+        return None
+
+    names = [n for n, _ in allowed]
+    levels = dict(allowed)
+
+    if ocr_text:
+        hit = get_close_matches(ocr_text.strip().upper(),
+                                [n.upper() for n in names], n=1, cutoff=cutoff)
+        if hit:
+            chosen = next(n for n in names if n.upper() == hit[0])
+            return SpeciesVerdict(chosen, levels[chosen], sorted(set(names)), True)
+
+    # Nothing in the text matched. One survivor is still an answer.
+    unique = sorted(set(names))
+    if len(unique) == 1:
+        return SpeciesVerdict(unique[0], levels[unique[0]], unique, False)
+
+    # Several survivors and no text to choose between them. Returning the first
+    # would be a coin flip wearing a result's clothes -- on a real reading that
+    # picked Nosepass for an Anorith. The alternatives are reported instead, so
+    # a caller can ask rather than be misled.
+    return SpeciesVerdict(None, None, unique, False)

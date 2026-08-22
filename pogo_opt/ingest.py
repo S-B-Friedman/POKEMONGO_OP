@@ -459,6 +459,40 @@ class ResourceRow:
         return bool(self.species) and self.candy is not None
 
 
+# A number as the game actually renders it in the resource row: either grouped
+# in threes with a separator, or a bare run short enough not to need one.
+#
+# The grouping is worth checking because it catches two OCR failures that a
+# permissive \d[\d,]* waves through. The stardust icon welds a digit onto the
+# figure beside it -- 521,865 read as "1521,865" -- and that has a separator in
+# the wrong place, so requiring correct grouping rejects it instead of banking a
+# stardust budget three times the real one. Upscaled thin strips also turn the
+# comma into a period, and since nothing in this row is a fractional quantity,
+# "1.645" can only be 1,645. The same rule that rejects the first accepts the
+# second, and rejects "3.34" off the weight line either way.
+_RESOURCE_NUMBER = re.compile(r"\d{1,3}(?:[.,]\d{3})+|\d{1,4}")
+
+
+def resource_number(token: str) -> int | None:
+    """-> the integer a resource-row token denotes, or None if it isn't one."""
+    token = token.strip().strip("+-'|\"_*~ ")
+    if not _RESOURCE_NUMBER.fullmatch(token):
+        return None
+    return int(token.replace(",", "").replace(".", ""))
+
+
+def _strip_label_words(word: str) -> str:
+    """Drop the fixed part of a resource label, leaving the species name.
+
+    "SWINUBCANDYXL" -> "SWINUB". OCR merges these tokens unpredictably, so the
+    species has to be recovered from whatever it ran together rather than from a
+    token that happens to stand alone.
+    """
+    for fixed in ("XL", "CANDY", "STARDUST"):
+        word = word.replace(fixed, "")
+    return word
+
+
 def parse_resource_row(
     values: Sequence[tuple[int, str]],
     labels: Sequence[tuple[int, str]],
@@ -489,27 +523,42 @@ def parse_resource_row(
         columns.append((min(xs_by_word["STARDUST"]), "stardust"))
 
     species = None
-    for word, xs in xs_by_word.items():
-        if word not in {"STARDUST", "CANDY", "XL"} and len(word) > 2:
-            species = word.title()
+    for word in xs_by_word:
+        stripped = _strip_label_words(word)
+        if stripped and len(stripped) > 2:
+            species = stripped.title()
             break
 
-    candy_xs = sorted(xs_by_word.get("CANDY", []))
-    xl_xs = sorted(xs_by_word.get("XL", []))
-    if candy_xs:
-        columns.append((candy_xs[0], "candy"))
+    # Any word CONTAINING "CANDY" marks a candy column, not only a word that IS
+    # "CANDY". OCR runs the label together as often as not -- on the frame this
+    # was traced from it read the candy column as one "SWINUBCANDY" token and
+    # the XL column as "SWINUB" + "CANDY", so matching on equality saw a single
+    # candy column, took it for the ordinary one, and reported Swinub's 293 XL
+    # candy as 293 candy. Confidently wrong, which is the one output this must
+    # never produce.
+    candy_xs = sorted(x for word, xs in xs_by_word.items() if "CANDY" in word
+                      for x in xs)
+    xl_xs = sorted(x for word, xs in xs_by_word.items() if "XL" in word
+                   for x in xs)
     # The XL column is the rightmost. OCR may read "CANDY" twice, or read the
     # "XL" and miss the second "CANDY", so accept either as evidence of it.
     xl_candidates = ([candy_xs[-1]] if len(candy_xs) > 1 else []) + xl_xs
-    if xl_candidates:
-        columns.append((max(xl_candidates), "xl_candy"))
+    xl_x = max(xl_candidates) if xl_candidates else None
+    # A lone candy column that carries the XL mark is the XL column, and there
+    # is then no ordinary candy count on offer. Naming it "candy" would be the
+    # same mistake one step further along.
+    plain_candy = [x for x in candy_xs if xl_x is None or x < xl_x]
+    if plain_candy:
+        columns.append((plain_candy[0], "candy"))
+    if xl_x is not None:
+        columns.append((xl_x, "xl_candy"))
 
     if not columns:
         return ResourceRow()
 
-    numbers = [(x, int(t.replace(",", "")))
+    numbers = [(x, value)
                for x, t in values
-               if re.fullmatch(r"\d[\d,]*", t.strip())]
+               if (value := resource_number(t)) is not None]
 
     # Assign per COLUMN, taking the nearest number to each -- not per number,
     # taking the nearest column. The difference matters: OCR leaves specks at

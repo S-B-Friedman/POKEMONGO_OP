@@ -43,6 +43,7 @@ import csv
 import logging
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 from pogo_opt.ingest import (
@@ -57,9 +58,16 @@ from pogo_opt.ingest import (
     parse_resource_row,
     find_bar_cluster,
     find_candy_anchor,
+    match_species_name,
+    resource_number,
 )
 
 log = logging.getLogger("ocr_ingest")
+
+# Mean absolute difference, on a 64x64 greyscale thumbnail, below which two
+# frames are treated as the same screen. Used both to skip settling frames and
+# to group a swipe-through into one run per Pokemon, so the two cannot drift.
+_SAME_SCREEN_DIFF = 4.0
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -308,14 +316,22 @@ def calibrate(image_path: Path, layout: BarLayout, out_dir: Path) -> None:
 # Video handling
 # --------------------------------------------------------------------------
 
-def iter_video_frames(video_path: Path, every_n: int, work_dir: Path):
-    """Yield (label, frame_path) for sampled, visually distinct frames.
+def iter_video_frames(video_path: Path, every_n: int, work_dir: Path,
+                      keep_similar: bool = False):
+    """Yield (label, frame_path) for sampled video frames.
 
     The original wrote every frame to disk and OCR'd each one. A 60-second
     30fps clip is 1,800 frames, so on the Vision API that's 1,800 billed calls
     to scan a collection that scrolls past maybe forty Pokemon. This samples
-    every Nth frame and skips frames that are near-identical to the last kept
-    one, which is what happens while a scroll is settling.
+    every Nth frame.
+
+    `keep_similar` decides what happens to the repeats. Dropping them -- the
+    old unconditional behaviour -- leaves exactly one frame per Pokemon, and one
+    frame cannot be voted on. That quietly contradicted the design: three
+    seconds per Pokemon at 30fps is ~90 frames of one screen, and every claim
+    this pipeline makes about robustness rests on having them. Keep them for a
+    swipe-through, where they are the evidence; drop them for a quick pass where
+    one reading per screen is all that is wanted.
     """
     _require("cv2", "opencv-python-headless")
     import cv2
@@ -337,8 +353,9 @@ def iter_video_frames(video_path: Path, every_n: int, work_dir: Path):
                 continue
 
             small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 64))
-            if previous is not None:
-                if float(np.mean(np.abs(small.astype(int) - previous.astype(int)))) < 4.0:
+            if not keep_similar and previous is not None:
+                same = float(np.mean(np.abs(small.astype(int) - previous.astype(int))))
+                if same < _SAME_SCREEN_DIFF:
                     idx += 1
                     continue
             previous = small
@@ -357,19 +374,100 @@ def iter_video_frames(video_path: Path, every_n: int, work_dir: Path):
 # Driver
 # --------------------------------------------------------------------------
 
-def dedupe(records: list[ScannedPokemon]) -> list[ScannedPokemon]:
-    """Collapse repeats of the same Pokemon, keeping the cleanest read.
+def group_consecutive(sources, threshold: float = _SAME_SCREEN_DIFF):
+    """Split an ordered list of (label, path) into one group per screen.
 
-    A scroll-through shows each Pokemon over several frames; (name, cp) is a
-    good enough identity for a single pass.
+    A swipe-through holds on each Pokemon for a second or more and then moves,
+    so "which Pokemon is this" is answered by WHEN the frame was taken, not by
+    what was read off it. Consecutive frames that look the same are the same
+    Pokemon; a jump in the image is the swipe.
+
+    Grouping in time is what makes duplicates survive. Identity-based collapsing
+    cannot tell three Machamps at CP 2451 apart from three readings of one
+    Machamp -- and a box of 1,500 is full of exactly that.
     """
-    best: dict[tuple[str | None, int | None], ScannedPokemon] = {}
-    for rec in records:
-        key = (rec.name, rec.cp)
-        incumbent = best.get(key)
-        if incumbent is None or len(rec.warnings) < len(incumbent.warnings):
-            best[key] = rec
-    return list(best.values())
+    _require("cv2", "opencv-python-headless")
+    import cv2
+    import numpy as np
+
+    groups: list[list] = []
+    previous = None
+    for item in sources:
+        path = item[1]
+        img = cv2.imread(str(path))
+        if img is None:
+            continue
+        small = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (64, 64))
+        moved = previous is None or float(
+            np.mean(np.abs(small.astype(int) - previous.astype(int)))
+        ) >= threshold
+        if moved:
+            groups.append([])
+        groups[-1].append(item)
+        previous = small
+    return groups
+
+
+def _majority(values):
+    """Most common non-None value, or None when there are none."""
+    present = [v for v in values if v is not None]
+    if not present:
+        return None
+    return Counter(present).most_common(1)[0][0]
+
+
+def vote_records(records: list[ScannedPokemon]) -> ScannedPokemon:
+    """One consensus record from every frame showing the same Pokemon.
+
+    Each field is voted independently, because OCR does not fail on a whole
+    frame at once -- it drops the name on one and mangles the CP on another, and
+    picking a single "best" frame throws away the good half of every other one.
+    That was the previous behaviour: keep whichever record carried the fewest
+    warnings and discard the rest.
+
+    IVs are voted as a TRIPLE rather than per stat. They are read from three
+    bars of one image, so a frame caught mid-animation is wrong about all three
+    together; letting an attack from one frame pair with a defense from another
+    would invent a spread that no frame actually showed.
+    """
+    if not records:
+        raise ValueError("no records to vote on")
+
+    ivs = _majority([
+        (r.attack_iv, r.defense_iv, r.stamina_iv) for r in records
+        if None not in (r.attack_iv, r.defense_iv, r.stamina_iv)
+    ]) or (None, None, None)
+
+    # Confidence belongs to the spread that won, not to the best frame overall.
+    agreed = [r for r in records
+              if (r.attack_iv, r.defense_iv, r.stamina_iv) == ivs]
+    confidence = max((r.iv_confidence for r in agreed
+                      if r.iv_confidence is not None), default=None)
+
+    winner = ScannedPokemon(
+        name=_majority([r.name for r in records]),
+        cp=_majority([r.cp for r in records]),
+        current_hp=_majority([r.current_hp for r in records]),
+        total_hp=_majority([r.total_hp for r in records]),
+        attack_iv=ivs[0],
+        defense_iv=ivs[1],
+        stamina_iv=ivs[2],
+        iv_confidence=confidence,
+        is_shadow=_majority([r.is_shadow for r in records]) or False,
+        is_lucky=_majority([r.is_lucky for r in records]) or False,
+        is_purified=_majority([r.is_purified for r in records]) or False,
+        date_caught=_majority([r.date_caught for r in records]),
+        source_frame=records[0].source_frame,
+    )
+    # Only warn about what survived the vote. A warning from a single bad frame
+    # describes a reading that was outvoted and is no longer being reported.
+    if winner.name is None:
+        winner.warnings.append("no species name agreed across frames")
+    if winner.cp is None:
+        winner.warnings.append("no CP agreed across frames")
+    if ivs == (None, None, None):
+        winner.warnings.append("no IV spread agreed across frames")
+    return winner
 
 
 def main() -> int:
@@ -388,6 +486,9 @@ def main() -> int:
     ap.add_argument("--calibrate", action="store_true",
                     help="dump bar crops from the first frame and exit")
     ap.add_argument("--no-ivs", action="store_true", help="skip appraisal bar reading")
+    ap.add_argument("--one-frame-each", action="store_true",
+                    help="keep one frame per screen instead of voting across "
+                         "all of them; faster, and much less robust")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -407,7 +508,9 @@ def main() -> int:
         if not sources:
             raise SystemExit(f"no images found in {args.images}")
     else:
-        sources = list(iter_video_frames(args.video, args.every_n, args.work_dir))
+        # Keep the repeats. They are the frames the vote is taken over.
+        sources = list(iter_video_frames(args.video, args.every_n, args.work_dir,
+                                         keep_similar=not args.one_frame_each))
         if not sources:
             raise SystemExit("no frames extracted")
 
@@ -417,28 +520,42 @@ def main() -> int:
 
     known_names = load_known_names(args.names)
 
-    records: list[ScannedPokemon] = []
-    for label, path in sources:
-        try:
-            text = read_text(path, args.engine)
-        except Exception as exc:
-            log.warning("OCR failed on %s: %s", label, exc)
-            continue
+    # A video is a swipe-through, so consecutive look-alike frames are one
+    # Pokemon and get voted on. A directory of screenshots is one shot per
+    # Pokemon already, and grouping those by appearance would merge two
+    # genuinely different Pokemon that happen to look alike -- so each stands
+    # alone.
+    groups = ([[s] for s in sources] if args.images
+              else group_consecutive(sources))
+    log.info("%d frames -> %d Pokemon", len(sources), len(groups))
 
-        fills = None
-        if not args.no_ivs:
+    unique: list[ScannedPokemon] = []
+    for group in groups:
+        seen: list[ScannedPokemon] = []
+        for label, path in group:
             try:
-                fills = read_bar_fills(path, layout)
+                text = read_text(path, args.engine)
             except Exception as exc:
-                log.debug("bar read failed on %s: %s", label, exc)
+                log.warning("OCR failed on %s: %s", label, exc)
+                continue
 
-        rec = build_record(text, known_names, fills, source_frame=label)
+            fills = None
+            if not args.no_ivs:
+                try:
+                    fills = read_bar_fills(path, layout)
+                except Exception as exc:
+                    log.debug("bar read failed on %s: %s", label, exc)
+
+            seen.append(build_record(text, known_names, fills, source_frame=label))
+
+        if not seen:
+            continue
+        rec = vote_records(seen)
         if rec.is_usable:
-            records.append(rec)
+            unique.append(rec)
         else:
-            log.debug("discarded %s: %s", label, "; ".join(rec.warnings))
+            log.debug("discarded %s: %s", rec.source_frame, "; ".join(rec.warnings))
 
-    unique = dedupe(records)
     if not unique:
         raise SystemExit("nothing usable extracted -- try --calibrate, or --engine vision")
 
@@ -525,6 +642,130 @@ def _words(band, scale: int = 3, psm: int = 6) -> list[tuple[int, str]]:
     ]
 
 
+def _words_xy(band, scale: int = 3, psm: int = 6, upscale: bool = True):
+    """-> [(x, y_centre, token)] in original pixels, for one strip.
+
+    Same call as _words, keeping the vertical position the caller throws away.
+    Unlike _words this does its own upscaling, so the coordinates it divides by
+    scale are the ones it actually read at. Pass upscale=False for a band that
+    arrives already enlarged -- _strokes returns one -- and it will divide by
+    scale without enlarging twice.
+    """
+    import cv2
+    import pytesseract
+    from pytesseract import Output
+
+    big = cv2.resize(band, None, fx=scale, fy=scale,
+                     interpolation=cv2.INTER_CUBIC) if upscale else band
+    data = pytesseract.image_to_data(
+        big, config=f"--psm {psm}", output_type=Output.DICT
+    )
+    out = []
+    for i, t in enumerate(data["text"]):
+        token = t.strip()
+        if not token:
+            continue
+        centre = data["top"][i] + data["height"][i] / 2
+        out.append((data["left"][i] // scale, centre / scale, token))
+    return out
+
+
+# Where to hunt for the resource row when the fixed band misses it. Wide enough
+# to cover both screen shapes seen so far and still stop short of the "caught
+# on ..." paragraph at ~0.93.
+_RESOURCE_SEARCH_BAND = (0.50, 0.90)
+
+# Words that identify the row wherever it has ended up.
+_RESOURCE_ANCHORS = ("STARDUST", "CANDY")
+
+# Line geometry, as fractions of screen height. A fraction is what went wrong
+# for the row's POSITION, but a fraction is the right unit for its PITCH: the
+# game scales its type with the screen, so two lines of the card sit the same
+# proportional distance apart on every device, while where that pair lands
+# depends on the aspect ratio. Tesseract's own reported glyph heights looked
+# like the natural unit and are not -- it called the same label row 2.7px tall
+# in one word and 11.3px in the next.
+_RESOURCE_LINE_TOLERANCE = 0.006
+_RESOURCE_LINE_GAP = 0.030
+
+
+def locate_resource_row(img):
+    """Find the resource row by reading it, rather than assuming where it sits.
+
+    _RESOURCE_BAND is a fraction of screen height calibrated on one phone, and a
+    fraction does not survive a change of aspect ratio: on a 1080x1920 capture
+    "PALKIA CANDY" sits at 0.707 of the height, a hair past the 0.70 cutoff, and
+    the entire row goes unread. The labels are their own landmark -- nothing else
+    on the card says STARDUST or CANDY -- so search a wide band for them and take
+    the numbers from whichever line turns out to be directly above.
+
+    -> (values, labels) in the (x, text) shape parse_resource_row wants, or None
+    when no labelled row is in the band. Returning None rather than a guess is
+    the point: most frames of a scroll-through are not detail screens at all.
+    """
+    import cv2
+
+    h, w = img.shape[:2]
+    top = int(h * _RESOURCE_SEARCH_BAND[0])
+    bottom = int(h * _RESOURCE_SEARCH_BAND[1])
+    # One mask, one OCR pass. The looser label threshold keeps the lighter grey
+    # labels AND the darker numerals above them, so both lines come back at once.
+    words = _words_xy(_text_mask(img, _LABEL_MAX_VALUE)[top:bottom, :])
+    if not words:
+        return None
+
+    def normalise(token: str) -> str:
+        return re.sub(r"[^A-Z]", "", token.upper())
+
+    anchors = [wd for wd in words
+               if any(a in normalise(wd[2]) for a in _RESOURCE_ANCHORS)]
+    if not anchors:
+        return None
+
+    tolerance = h * _RESOURCE_LINE_TOLERANCE
+    ys = sorted(wd[1] for wd in anchors)
+    label_y = ys[len(ys) // 2]
+
+    labels = [(int(x), token) for x, y, token in words
+              if abs(y - label_y) <= tolerance]
+
+    # The numbers sit on the line immediately above. Bound the gap: reach far
+    # enough and the next line up is the weight/height row, and reading that as
+    # though it were the resource row is exactly the confident-but-wrong answer
+    # this pipeline exists to avoid.
+    above = [wd for wd in words if label_y - wd[1] > tolerance]
+    if not above:
+        return None
+    value_y = max(wd[1] for wd in above)
+    if label_y - value_y > h * _RESOURCE_LINE_GAP:
+        return None
+
+    # Re-read the numbers with the tighter threshold. The loose mask that makes
+    # the grey labels legible also keeps the stardust and candy icons, and
+    # tesseract reads those as digits welded to the figure beside them -- a
+    # 521,865 came back as "1521,865" and a 1,645 as "4,645". The numerals are
+    # darker than the labels, so a second pass over the one line now known to
+    # hold them gets both right where no single threshold can.
+    # Pad generously. Cropped to the glyphs themselves tesseract reads the
+    # thousands comma as a period; given room around the line it reads it as a
+    # comma. The line pitch is the natural amount of room to give it.
+    margin = h * _RESOURCE_LINE_GAP * 0.6
+    strip_top = top + int(value_y - margin)
+    strip_bottom = top + int(value_y + margin)
+    # _words_xy, not _words, so both lines are measured on the same scale.
+    # _words divides x by an upscale factor it does not itself apply, which is
+    # consistent within the fixed-band path because both its lines are read that
+    # way -- and silently wrong here, where the labels came back in real pixels
+    # and the numbers at a third of that. Pairing them put the candy count in
+    # the stardust column.
+    values = [(x, token) for x, _, token in _words_xy(
+        _text_mask(img, _VALUE_MAX_VALUE)[max(strip_top, 0):min(strip_bottom, h), :])]
+    if not values:
+        return None
+
+    return values, labels
+
+
 def read_species_name(img, known_names=None) -> str | None:
     """The species (or nickname) from the top of the info card.
 
@@ -578,6 +819,16 @@ def read_resource_row(img) -> ResourceRow:
     if row.usable:
         return row
 
+    # The band missed the row. Before falling back to the overlay reading -- which
+    # gives up the stardust and XL columns -- try locating the row by its labels.
+    # This is the ordinary case on a screen shaped differently from the one the
+    # band was calibrated on, and there the full row is still perfectly legible.
+    located = locate_resource_row(img)
+    if located is not None:
+        row = parse_resource_row(*located)
+        if row.usable:
+            return row
+
     grey = cv2.cvtColor(img[top:bottom, :], cv2.COLOR_BGR2GRAY)
 
     # The labels went unread. On the appraisal overlay they are dimmed to within
@@ -600,9 +851,9 @@ def read_resource_row(img) -> ResourceRow:
     # match.
     numbers = []
     for x, token in dimmed:
-        trimmed = token.strip("+-.'|\"_*~ ")
-        if re.fullmatch(r"\d[\d,]*", trimmed):
-            numbers.append((x, int(trimmed.replace(",", ""))))
+        value = resource_number(token.strip("+-.'|\"_*~ "))
+        if value is not None:
+            numbers.append((x, value))
 
     # ONLY the candy column is taken here. On this screen the rating badge sits
     # over the stardust figure and the team leader stands over the XL one, so

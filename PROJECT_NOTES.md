@@ -7,8 +7,8 @@ exists for the things that are expensive to reconstruct from code alone.
 
 ## Where each piece stands
 
-341 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
-**no skips**. 337 need nothing beyond `requirements-dev.txt`; the other 4 are
+362 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 353 need nothing beyond `requirements-dev.txt`; the other 9 are
 the image path, needing OpenCV, Pillow and the tesseract binary, all of which
 CI installs. A test that skips itself is not a test that passed, and the
 summary line does not distinguish them — so the extras are installed rather
@@ -17,11 +17,11 @@ than allowed to quietly disable coverage.
 | Component | State | Verified how |
 |---|---|---|
 | Optimizer | Done | 137 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
-| Image path | Done | 4 tests, synthetic screenshots painted like the real UI |
+| Image path | Done | 9 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
 | Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (75 tests) |
-| Level solver | Done | 31 tests; round-trips across levels and IV spreads |
-| Frame voting | Done | Survives corrupted frames in synthetic runs |
+| Level solver | Done | 37 tests; round-trips across levels and IV spreads |
+| Frame voting | Done, **now actually used** | The video path kept 1 frame per Pokemon and never voted |
 | SQLite schema | Done, **not wired** | 23 tests: scoping, cascades, constraints |
 | Parsing layer | Done | 24 tests, no images or API keys needed |
 | Reference data | Done | 1,486 species / 384 moves from GAME_MASTER |
@@ -30,9 +30,10 @@ than allowed to quietly disable coverage.
 | HTTP API | Done, in-memory | Swap `STATE` for `db.py` next |
 | Appraisal bars | Calibrated | 23 tests; real capture, IVs reproduce CP **and** HP |
 | CP from a screenshot | Checked, not trusted | OCR proposes; only a CP the IVs and HP can reproduce is kept |
-| Species name from a screenshot | **Weak** | No arithmetic to check it against; misreads survive |
-| Grid tile geometry | **Not built** | Needs a real grid screenshot |
-| Scroll tracking | **Not built** | Needs a real swipe video |
+| Species from a screenshot | Checked, not trusted | 15/18 on real frames, 0 wrong; numbers narrow 1,486, text chooses within |
+| Resource row | Located, not assumed | Found by its own labels; reads exactly at 8 of 8 screen positions |
+| Swipe segmentation | Done | Grouped in time, so duplicates survive; 8/8 and 11/11 on real frames |
+| Grid tile geometry | Not needed | Superseded by swiping through detail screens |
 
 ---
 
@@ -72,6 +73,79 @@ connection string. Adding a tenant key to thousands of live rows is not.
 **Objective is marginal gain, not absolute rating.** Maximizing total rating of
 the chosen set just picks whatever was already strongest. The question is what
 to *spend on*, which is a question about improvement per unit cost.
+
+---
+
+## Is the OCR done?
+
+Reading **one** Pokémon: yes, and measured. Reading a **collection** from a
+swipe-through: yes as of the segmentation work below, and measured on the frames
+available — but not yet run against a full-length capture of a real box.
+
+Measured over all 19 real frames available (two captures, 18 with an identifiable
+subject), scoring the name against the "This X was caught on …" line — a
+different part of the screen from the one being read:
+
+```
+name matched against 1,024 species: 15/18 correct, 0 WRONG, 3 unread
+```
+
+**Zero wrong is the number that matters**, and the three misses are all
+nicknames: "Daj mahal 96" (a Zamazenta), "Drag'nite", "Sanji 100" (a Blaziken).
+The matcher declines rather than forcing a nickname onto the nearest species,
+which is the correct failure. Those three are also exactly the case
+`verify_species()` exists for — CP, HP and the IV bars identify a Pokémon whose
+name is unreadable, so the arithmetic can recover what the text cannot.
+
+That measurement is also what caught `read_species_name()` raising `NameError`
+on every call that supplied a species list: `ocr_ingest` never imported
+`match_species_name`. Every internal caller passes no list and takes the regex
+path, so nothing in the repo touched the broken branch. It took running the
+accurate path against real frames — which nobody had done — to find that the
+accurate path did not run at all.
+
+### Reading a collection
+
+The intended capture is a **swipe-through of detail screens with appraise open**,
+not a grid scan. That choice removes grid tile geometry from the problem
+entirely, and it is the better trade: the grid shows a sprite and a CP, while
+the detail screen shows everything the solver needs.
+
+Two things were wrong for that workflow, and both were silent.
+
+**`dedupe()` collapsed genuine duplicates.** It keyed on `(name, cp)`, which
+cannot tell three Machamps at CP 2451 apart from three readings of one Machamp.
+Two of the three were dropped with nothing logged. A box of 1,500 is mostly
+duplicates, so this was not an edge case — it was the common case.
+
+**The video path never voted.** `iter_video_frames()` discarded frames that
+looked like the previous one, leaving exactly one frame per Pokémon, and one
+frame cannot be voted on. That quietly contradicted the design note above: the
+~90 frames per Pokémon are the entire basis of the robustness claim, and they
+were being thrown away before anything could use them.
+
+Frames are grouped in **time** now — consecutive look-alike frames are one
+Pokémon, a jump is the swipe — and every field is voted independently across the
+group. Grouping in time is what saves the duplicates: two Machamps are two runs
+regardless of reading identically. Measured on the real frames, 8/8 and 11/11
+distinct Pokémon separated correctly, one group for 40 copies of one screen, and
+two groups of 20 for a swipe in the middle.
+
+IVs are voted as a **triple**, never per stat. Three bars are read off one image,
+so a frame caught mid-animation is wrong about all three together; pairing an
+attack from one frame with a defense from another would invent a spread that no
+frame ever showed.
+
+| Piece | State |
+|---|---|
+| Per-Pokémon read (bars, CP, species, level) | Done, measured |
+| Resource row (candy) | Done, measured |
+| Swipe segmentation and voting | Done, measured |
+| Grid tile geometry | Not needed — superseded by the swipe-through |
+
+What remains is not code: a swipe-through of a real box, long enough to hold on
+each Pokémon, to confirm the grouping thresholds on a genuine capture rather than
+on frames sampled every 60.
 
 ---
 
@@ -180,17 +254,78 @@ to *spend on*, which is a question about improvement per unit cost.
   emits exactly what `load_candy_inventory` reads. Verified end to end on a real
   capture: 521,865 stardust / 1,645 Swinub candy / 293 XL, all three correct.
 
-  Two things it took to get there, both worth keeping in mind for the rest of
+  Four things it took to get there, all worth keeping in mind for the rest of
   the screen. The numerals are dark teal and the icons beside them are bright
   orange, and thresholding on brightness alone leaves dark icon edges that
-  Tesseract reads as digits — the candy icon turned 1,645 into 21,645. And the
-  labels are a lighter grey than the numerals, so one threshold cannot serve
+  Tesseract reads as digits — the candy icon turned 1,645 into 21,645, and the
+  stardust icon turned 521,865 into 1,521,865. The fix that generalises is not a
+  better threshold but a checkable property: the game groups its numbers in
+  threes, so a separator in the wrong place proves the token is not a number the
+  game wrote. The same rule accepts the comma that upscaled thin strips render
+  as a period, since nothing in this row is a fractional quantity.
+
+  The labels are a lighter grey than the numerals, so one threshold cannot serve
   both: tuned for the numbers it erased the labels, and a frame with three
   perfectly-read values was discarded for having no species name.
+
+  **The row is found by its labels, not by a height fraction.** A fraction is
+  calibrated on one phone and does not survive a change of aspect ratio — on a
+  1080×1920 capture `PALKIA CANDY` sits at 0.707, a hair past a 0.70 cutoff, and
+  the entire row went unread. Nothing else on the card says STARDUST or CANDY,
+  so `locate_resource_row()` searches a wide band for those words and takes the
+  numbers from whichever line turns out to be directly above. On a real card slid
+  from 0.687 to 0.847 of screen height, 8 of 8 positions now read exactly.
+
+  **And the column has to be identified, not counted.** Tesseract runs a label
+  together as often as not: it read the candy column as one `SWINUBCANDY` token
+  while reading the XL column as `SWINUB` + `CANDY`. Matching labels on equality
+  with "CANDY" therefore saw one candy column — the XL one — took it for the
+  ordinary one, and returned Swinub's 293 XL candy as 293 candy.
+
+  What that cost end to end is worth stating exactly, because it is not what it
+  looks like. `scan_resource_rows` threw the row away: the same merge that broke
+  the column also contaminated the species name to `Swinubcandy`, which is not
+  in the reference. So the observed damage was a *dropped* row, not a wrong
+  budget — the pipeline failed closed.
+
+  It failed closed by luck, though, not by design. Species was taken from the
+  first label word long enough to be a name, so had tesseract emitted the XL
+  column's clean `SWINUB` before the merged token, the species would have passed
+  the reference check and the wrong candy count would have gone straight into
+  the inventory with nothing to flag it. The ordering that saved it is not a
+  property anyone chose.
+
+  Matching on containment fixes the column; a lone column carrying the XL mark
+  is now reported as XL with no candy rather than mislabelled; and the species
+  is recovered by stripping the fixed words off whatever tesseract ran together,
+  so it no longer depends on which token came first.
 
   The throughput limit is the real one though. One detail screen shows one
   species, so a collection needs one screen per species — a 7.7s clip yielded
   exactly one.
+
+  **Candy cannot be read off the appraisal overlay, and it is worth knowing why
+  rather than trying again.** Measured across 19 frames of two captures, 1 gave
+  a usable resource row. The other 18 were appraisal frames, and on those:
+
+  - The *values* read fine. Palkia's `129` candy comes back cleanly at 0.683 of
+    screen height under a black-hat.
+  - The *labels* do not read at all. Nothing in the band survives the dimming —
+    not `PALKIA CANDY`, not `STARDUST`, at any threshold tried. So the column
+    cannot be identified by its label, which is how every other path does it.
+  - Position is not a substitute. Mega-capable Pokémon carry an extra Mega
+    Energy element that shifts the row, so a fixed column index reads the wrong
+    number for exactly the Pokémon most worth powering up.
+  - Nor is icon colour, which was the remaining idea. On a clean card the candy
+    icons are distinctly orange (H≈7–8) against the blue stardust icon (H≈143)
+    and would anchor the column well. On the overlay the rating badge (H≈18,
+    x 0.14–0.29) and the team leader (H≈100, x 0.33–0.91) saturate the entire
+    row, and the icons are not separable from either.
+
+  Three independent ways to find the column, all blocked by the same overlay.
+  The practical consequence is a capture instruction, not a code change: **pause
+  on the plain detail screen for each species**, with no appraisal open. The
+  appraisal screen's job here is the IV bars, and those already read.
 
 - **The purified candy discount mostly rounds away.** Per-step candy is small
   and the code takes `ceil`, so `ceil(8 * 0.9) == 8`: the 10% discount is
