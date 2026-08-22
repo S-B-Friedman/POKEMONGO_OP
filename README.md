@@ -405,7 +405,7 @@ scripts/
   build_reference.py          GAME_MASTER -> reference.json; --check-costs
   rebuild_sample_data.py      regenerate sample stat columns; --check
 sample_data/                  runnable example collection
-tests/                        307 tests: mechanics, solver, parsing, import,
+tests/                        355 tests: mechanics, solver, parsing, import,
                               DB, appraisal bars, image path
 .github/workflows/tests.yml   CI: suite + entry points on 3.11 and 3.12
 ```

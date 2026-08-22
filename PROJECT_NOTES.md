@@ -7,8 +7,8 @@ exists for the things that are expensive to reconstruct from code alone.
 
 ## Where each piece stands
 
-347 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
-**no skips**. 343 need nothing beyond `requirements-dev.txt`; the other 4 are
+355 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 348 need nothing beyond `requirements-dev.txt`; the other 7 are
 the image path, needing OpenCV, Pillow and the tesseract binary, all of which
 CI installs. A test that skips itself is not a test that passed, and the
 summary line does not distinguish them — so the extras are installed rather
@@ -17,7 +17,7 @@ than allowed to quietly disable coverage.
 | Component | State | Verified how |
 |---|---|---|
 | Optimizer | Done | 137 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
-| Image path | Done | 4 tests, synthetic screenshots painted like the real UI |
+| Image path | Done | 7 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
 | Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (75 tests) |
 | Level solver | Done | 37 tests; round-trips across levels and IV spreads |
@@ -31,6 +31,7 @@ than allowed to quietly disable coverage.
 | Appraisal bars | Calibrated | 23 tests; real capture, IVs reproduce CP **and** HP |
 | CP from a screenshot | Checked, not trusted | OCR proposes; only a CP the IVs and HP can reproduce is kept |
 | Species from a screenshot | Checked, not trusted | Numbers narrow 1,486 to a handful; text only chooses within it |
+| Resource row | Located, not assumed | Found by its own labels; reads exactly at 8 of 8 screen positions |
 | Grid tile geometry | **Not built** | Needs a real grid screenshot |
 | Scroll tracking | **Not built** | Needs a real swipe video |
 
@@ -180,13 +181,36 @@ to *spend on*, which is a question about improvement per unit cost.
   emits exactly what `load_candy_inventory` reads. Verified end to end on a real
   capture: 521,865 stardust / 1,645 Swinub candy / 293 XL, all three correct.
 
-  Two things it took to get there, both worth keeping in mind for the rest of
+  Four things it took to get there, all worth keeping in mind for the rest of
   the screen. The numerals are dark teal and the icons beside them are bright
   orange, and thresholding on brightness alone leaves dark icon edges that
-  Tesseract reads as digits — the candy icon turned 1,645 into 21,645. And the
-  labels are a lighter grey than the numerals, so one threshold cannot serve
+  Tesseract reads as digits — the candy icon turned 1,645 into 21,645, and the
+  stardust icon turned 521,865 into 1,521,865. The fix that generalises is not a
+  better threshold but a checkable property: the game groups its numbers in
+  threes, so a separator in the wrong place proves the token is not a number the
+  game wrote. The same rule accepts the comma that upscaled thin strips render
+  as a period, since nothing in this row is a fractional quantity.
+
+  The labels are a lighter grey than the numerals, so one threshold cannot serve
   both: tuned for the numbers it erased the labels, and a frame with three
   perfectly-read values was discarded for having no species name.
+
+  **The row is found by its labels, not by a height fraction.** A fraction is
+  calibrated on one phone and does not survive a change of aspect ratio — on a
+  1080×1920 capture `PALKIA CANDY` sits at 0.707, a hair past a 0.70 cutoff, and
+  the entire row went unread. Nothing else on the card says STARDUST or CANDY,
+  so `locate_resource_row()` searches a wide band for those words and takes the
+  numbers from whichever line turns out to be directly above. On a real card slid
+  from 0.687 to 0.847 of screen height, 8 of 8 positions now read exactly.
+
+  **And the column has to be identified, not counted.** Tesseract runs a label
+  together as often as not: it read the candy column as one `SWINUBCANDY` token
+  while reading the XL column as `SWINUB` + `CANDY`. Matching labels on equality
+  with "CANDY" therefore saw one candy column — the XL one — took it for the
+  ordinary one, and reported Swinub's 293 XL candy as 293 candy. Every field
+  populated, nothing to flag, and a candy budget three times too small. Matching
+  on containment fixes it; a lone column carrying the XL mark is now reported as
+  XL with no candy, rather than mislabelled.
 
   The throughput limit is the real one though. One detail screen shows one
   species, so a collection needs one screen per species — a 7.7s clip yielded
