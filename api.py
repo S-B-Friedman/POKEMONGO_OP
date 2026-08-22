@@ -12,9 +12,12 @@ baseline benchmark.py exists to beat, and a second copy of the cost tables that
 would drift from costs.py within a week. There is one model, it is the MIP, and
 it runs here.
 
-State lives in a SQLite file (pogo_opt/db.py). Single trainer by default; the
-schema is already scoped by trainer_id, so adding accounts later is a routing
-change rather than a migration.
+State is an in-memory dict, not the database. `pogo_opt/db.py` and its schema
+exist and are tested, but nothing here reads them yet — the working set is
+`STATE` below, and it is lost on restart. Said plainly because this docstring
+previously claimed the opposite, which is a bad thing to be wrong about: the
+schema is scoped by trainer_id, so a reader could reasonably have assumed the
+API was already multi-tenant and persistent when it is neither.
 """
 
 from __future__ import annotations
@@ -30,7 +33,13 @@ from pydantic import BaseModel, Field
 
 from pogo_opt.data import PokemonInstance, load_candy_inventory, load_from_csv
 from pogo_opt.importers.pokegenie import import_rows
-from pogo_opt.model import Weights, build_and_solve, combat_power, rating
+from pogo_opt.model import (
+    Weights,
+    build_and_solve,
+    candy_pool_key,
+    combat_power,
+    rating,
+)
 from pogo_opt.reference import default_reference
 
 HERE = Path(__file__).parent
@@ -302,18 +311,29 @@ def get_candy() -> list[dict]:
     a reasonable default and a silent one. Reporting `known: false` is what lets
     the UI ask for the numbers that would actually change the answer instead of
     demanding the whole inventory up front.
+
+    Stock is looked up by evolution FAMILY, because that is the pile the game
+    keeps and the key the inventory uses. Looking it up by species_id -- which
+    this did -- misses every entry, so a fully populated inventory reported
+    `known: false` for all twenty of its species and the UI would have asked for
+    numbers it already had.
+
+    `family` is reported alongside so a caller can see that two rows share one
+    pile rather than reading the repeated number as two independent stocks.
     """
     seen = {p.species_id: p.name for p in STATE["collection"]}
-    return [
-        {
+    out = []
+    for sid, name in sorted(seen.items()):
+        pool = candy_pool_key(sid)
+        out.append({
             "species_id": sid,
             "name": name,
-            "candy": STATE["candy"].get(sid),
-            "xl_candy": STATE["xl_candy"].get(sid),
-            "known": sid in STATE["candy"],
-        }
-        for sid, name in sorted(seen.items())
-    ]
+            "family": pool if isinstance(pool, str) else None,
+            "candy": STATE["candy"].get(pool),
+            "xl_candy": STATE["xl_candy"].get(pool),
+            "known": pool in STATE["candy"],
+        })
+    return out
 
 
 class CandyUpdate(BaseModel):
@@ -324,10 +344,23 @@ class CandyUpdate(BaseModel):
 
 @app.put("/candy")
 def put_candy(updates: list[CandyUpdate]) -> dict:
+    """Set stock for the family each species belongs to.
+
+    Callers speak species_id, because that is what a person reads off their own
+    screen. The inventory is keyed by family, so the translation happens here.
+
+    Writing the raw species_id instead did not fail quietly -- it broke the next
+    solve outright. build_and_solve normalizes both keyings and refuses when they
+    disagree, so a PUT for a species whose family was already stocked left two
+    counts for one pile and raised "candy inventory gives two different counts
+    for the Squirtle family (190 and 0)". Every PUT against the loaded sample
+    inventory did this, which is to say the endpoint could not be used at all.
+    """
     for u in updates:
+        pool = candy_pool_key(u.species_id)
         if u.candy is not None:
-            STATE["candy"][u.species_id] = u.candy
+            STATE["candy"][pool] = u.candy
         if u.xl_candy is not None:
-            STATE["xl_candy"][u.species_id] = u.xl_candy
-    return {"species_with_candy": len(STATE["candy"]),
-            "species_with_xl": len(STATE["xl_candy"])}
+            STATE["xl_candy"][pool] = u.xl_candy
+    return {"families_with_candy": len(STATE["candy"]),
+            "families_with_xl": len(STATE["xl_candy"])}

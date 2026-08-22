@@ -292,7 +292,7 @@ uvicorn api:app --reload          # http://127.0.0.1:8000/docs
 | `GET /collection?bulk=` | rows with CP and rating |
 | `POST /solve` | the MIP; returns plan, per-species usage, and duals |
 | `POST /import/pokegenie` | CSV upload; `?dry_run=true` returns the column mapping |
-| `GET` / `PUT /candy` | per-species stock, flagging which are unknown |
+| `GET` / `PUT /candy` | stock per evolution family, flagging which are unknown |
 
 State is in-memory (a `STATE` dict) so the API is exercisable before the SQLite
 wiring exists — `pogo_opt/db.py` and `schema.sql` are already written and
@@ -303,6 +303,12 @@ rewrite.
 unconstrained in the model, which is a reasonable default and a silent one;
 surfacing it lets a UI ask for the handful of numbers that would actually change
 the answer instead of demanding two hundred rows up front.
+
+Both endpoints address stock by **evolution family**, since that is the pile the
+game keeps. Callers still speak `species_id` — it is what a person reads off
+their own screen — and the translation happens server-side, so a `PUT` for a
+Blastoise sets the Squirtle family's stock and a `GET` reports `family` beside
+each row. Two rows carrying the same number are one pile, not two.
 
 ## Which constraint is actually binding
 
