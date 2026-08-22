@@ -665,6 +665,11 @@ def main() -> int:
     ap.add_argument("--calibrate", action="store_true",
                     help="dump bar crops from the first frame and exit")
     ap.add_argument("--no-ivs", action="store_true", help="skip appraisal bar reading")
+    ap.add_argument("--candy-out", type=Path,
+                    help="also write a per-family candy CSV from the detail "
+                         "screens' resource row. Needs the appraisal CLOSED: "
+                         "the overlay's rating badge and team leader sit on top "
+                         "of that row")
     ap.add_argument("--no-verify", action="store_true",
                     help="skip checking the CP against the IVs and HP; faster, "
                          "and lets an unverifiable CP through")
@@ -751,6 +756,32 @@ def main() -> int:
             unique.append(rec)
         else:
             log.debug("discarded %s: %s", rec.source_frame, "; ".join(rec.warnings))
+
+    # Candy comes off the same frames, but only where the appraisal is closed.
+    # Done here rather than in a separate pass so one capture of plain detail
+    # screens yields both the collection and the candy inventory.
+    if args.candy_out:
+        images = [cv2.imread(str(pth)) for _, pth in sources]
+        # Two readers, because the row is legible in two different situations.
+        # The clean detail card gives all three columns at once; the appraisal
+        # overlay gives only what slides through the gap between the rating
+        # badge and the team leader, but it gives it from the same pass that
+        # read the IVs. Merged rather than chosen between, so one capture of
+        # either kind works.
+        rows = scan_resource_rows(images)
+        for dex, row in scan_overlay_candy(images).items():
+            if dex not in rows:
+                rows[dex] = row
+        written = write_candy_csv(rows, args.candy_out)
+        if written:
+            print(f"Wrote candy for {written} families to {args.candy_out}.")
+        else:
+            print(
+                f"No candy read, so {args.candy_out} is empty. Sitting still on "
+                f"the appraisal screen the candy figure is behind the team "
+                f"leader; it becomes legible mid-swipe, or on a pass with the "
+                f"appraisal closed."
+            )
 
     if not unique:
         raise SystemExit("nothing usable extracted -- try --calibrate, or --engine vision")
@@ -1127,6 +1158,144 @@ def scan_resource_rows(frames, ref=None, sample_every: int = 5) -> dict[int, Res
             continue
         out[dex] = ResourceRow(species=seen[dex].species, candy=candy, xl_candy=xl)
     return out
+
+
+# The appraisal overlay covers the resource row with fixed furniture: a rating
+# badge on the left (x 0.14-0.29) and the team leader on the right (x 0.58+).
+# Between them is a clear window, and because both are OVERLAY -- fixed to the
+# screen, not to the card -- that window stays put while the card slides through
+# it during a swipe.
+#
+# That is what makes candy readable here at all. Sitting still, a mega-capable
+# Pokemon's candy figure is behind the leader's head and simply absent from the
+# pixels. Mid-swipe it slides into the clear and reads exactly.
+#
+# The window is narrow on purpose. Widening it by 20px in either direction pulls
+# in the badge fringe or the face, and tesseract then returns "SE" for a label
+# that reads "GIBLE CANDY" when cropped to the gap.
+_OVERLAY_WINDOW = (0.33, 0.58)
+
+# Offsets from a candidate value line to the label beneath it, as fractions of
+# screen height. Searched rather than fixed: the first frame that yields a candy
+# label locks the offset in, and the rest of the capture reuses it.
+_OVERLAY_LABEL_OFFSETS = (0.017, 0.021, 0.025)
+_OVERLAY_ROW_SEARCH = (0.60, 0.76)
+
+
+def _read_window(img, y0: int, y1: int, scale: int = 5, psm: int = 7) -> str:
+    """OCR one narrow crop of the overlay's clear window."""
+    import cv2
+    import pytesseract
+
+    h, w = img.shape[:2]
+    crop = img[max(0, y0):min(h, y1),
+               int(w * _OVERLAY_WINDOW[0]):int(w * _OVERLAY_WINDOW[1])]
+    if crop.size == 0:
+        return ""
+    big = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), None,
+                     fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    return pytesseract.image_to_string(big, config=f"--psm {psm}").strip()
+
+
+def scan_overlay_candy(frames, ref=None) -> dict[int, ResourceRow]:
+    """Read per-family candy off an appraisal swipe-through.
+
+    The appraisal screen was written off as unreadable for candy, and that was
+    right about a screen sitting still: the rating badge covers the stardust
+    figure and the team leader stands over the candy one, so for a mega-capable
+    Pokemon the digits are not in the image at all. Measured over 19 frames of
+    two captures, one gave a usable row.
+
+    Swiping changes the geometry. The badge and the leader belong to the
+    overlay, so they hold still while the card slides, and every column crosses
+    the gap between them on its way past. Reading that gap on each frame of a
+    50-second capture recovered Gible 472, Bagon 968 and Dratini 192 -- three
+    families, from the same pass that read the IVs, with no second recording.
+
+    Majority-voted per family, for the same reason every other reading here is.
+    """
+    _require("cv2", "opencv-python-headless")
+    _require("pytesseract", "pytesseract")
+
+    from pogo_opt.reference import default_reference
+
+    ref = ref or default_reference()
+    families = {}
+    for sp in ref._species.values():
+        if sp.family:
+            families.setdefault(re.sub(r"[^A-Z]", "", sp.family.upper()), sp)
+
+    import cv2
+
+    votes: dict[tuple[str, bool], Counter] = {}
+
+    for img in frames:
+        if img is None:
+            continue
+        h = img.shape[0]
+        top = int(h * _OVERLAY_ROW_SEARCH[0])
+        bottom = int(h * _OVERLAY_ROW_SEARCH[1])
+        band = cv2.cvtColor(img[top:bottom, :], cv2.COLOR_BGR2GRAY)
+
+        # Find the NUMBERS first, with one black-hat pass over the band. They
+        # survive the overlay's dimming where the labels do not, so they are the
+        # cheap way to locate the row -- searching for the row by OCR'ing every
+        # candidate height costs a few hundred passes per frame and is what made
+        # an earlier version of this slower than the entire rest of the pipeline.
+        for x, y, token in _words_xy(_strokes(band), upscale=False):
+            value = resource_number(token)
+            if value is None:
+                continue
+
+            # Then read only the line beneath that number. Cropped to the clear
+            # window it reads; widened into the badge or the face it does not.
+            label = ""
+            for off in _OVERLAY_LABEL_OFFSETS:
+                label = _read_window(img, int(top + y + h * off),
+                                     int(top + y + h * (off + 0.022)))
+                if "CAND" in re.sub(r"[^A-Z]", "", label.upper()):
+                    break
+            flat = re.sub(r"[^A-Z]", "", label.upper())
+            if "CAND" not in flat:
+                continue
+
+            stem = flat.replace("XL", "").replace("CANDY", "").replace("CAND", "")
+            species = _match_family(stem, families)
+            if species is None:
+                continue
+            votes.setdefault((species.family, "XL" in flat), Counter())[value] += 1
+
+    out: dict[int, ResourceRow] = {}
+    for (family, is_xl), counter in votes.items():
+        species = families.get(re.sub(r"[^A-Z]", "", family.upper()))
+        if species is None:
+            continue
+        row = out.get(species.dex) or ResourceRow(species=species.name)
+        value = counter.most_common(1)[0][0]
+        out[species.dex] = ResourceRow(
+            species=row.species,
+            stardust=row.stardust,
+            candy=value if not is_xl else row.candy,
+            xl_candy=value if is_xl else row.xl_candy,
+        )
+    return out
+
+
+def _match_family(stem: str, families: dict):
+    """Fuzzy-match a partly-read family label to a known family.
+
+    The window clips the label as the card slides, so "GIBLE CANDY" arrives as
+    "GIBLECAND", "GIBLE" or just "E". A prefix long enough to be evidence wins;
+    anything shorter is dropped rather than guessed at.
+    """
+    import difflib
+
+    if len(stem) < 4:
+        return None
+    if stem in families:
+        return families[stem]
+    close = difflib.get_close_matches(stem, families.keys(), n=1, cutoff=0.8)
+    return families[close[0]] if close else None
 
 
 def write_candy_csv(rows: dict[int, ResourceRow], path: Path) -> int:

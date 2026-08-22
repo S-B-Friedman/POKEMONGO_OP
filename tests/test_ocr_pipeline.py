@@ -57,6 +57,14 @@ ROW_CARD = (254, 254, 254)
 # The ratio still has to be right. At a plausible-looking value size the glyphs
 # grow taller than the gap to the line below and overlap the labels, and
 # tesseract reads "SWINUB CANDY" as "RFan ... DY".
+# Overlay row colours, sampled off a real mid-swipe frame. Both the number and
+# the label are DARKER than the dimmed background -- painting them light, which
+# looks right for a dark overlay, makes the black-hat that finds the number see
+# nothing at all.
+OVERLAY_BG = (77, 134, 161)
+OVERLAY_VALUE = (21, 78, 105)
+OVERLAY_LABEL = (41, 101, 129)
+
 ROW_VALUE_FONT = 30
 ROW_LABEL_FONT = 17
 ROW_LINE_PITCH = 42
@@ -259,3 +267,43 @@ def test_frames_are_grouped_by_when_not_by_what(tmp_path):
     assert len(group_consecutive(held)) == 1
     groups = group_consecutive(swiped)
     assert [len(g) for g in groups] == [12, 9]
+
+
+def test_overlay_candy_reads_only_the_clear_window(tmp_path):
+    """The appraisal overlay's badge and team leader are fixed to the SCREEN.
+
+    Sitting still, a mega-capable Pokemon's candy figure is behind the leader's
+    head and simply absent from the pixels. Mid-swipe the card slides and the
+    column crosses the gap between the badge and the face, where it reads
+    exactly. This paints that geometry: a number and its label inside the clear
+    window, and decoy furniture on either side.
+    """
+    pytest.importorskip("pytesseract")
+    if shutil.which("tesseract") is None:
+        pytest.skip("tesseract binary not on PATH")
+    from ocr_ingest import scan_overlay_candy
+
+    h, w = 1920, 1080
+    img = Image.new("RGB", (w, h), OVERLAY_BG)
+    d = ImageDraw.Draw(img)
+    # Furniture: rating badge on the left, team leader on the right. Both are
+    # fixed to the screen, and both are what makes the window between them the
+    # only place this can be read.
+    d.ellipse([int(w * 0.12), int(h * 0.63), int(w * 0.30), int(h * 0.72)],
+              fill=(250, 190, 90))
+    d.rectangle([int(w * 0.58), int(h * 0.60), w, int(h * 0.80)],
+                fill=(200, 170, 150))
+    # The row, inside the clear window between them.
+    d.text((int(w * 0.40), int(h * 0.665)), "472", fill=OVERLAY_VALUE,
+           font=_font(46))
+    d.text((int(w * 0.345), int(h * 0.694)), "GIBLE CANDY",
+           fill=OVERLAY_LABEL, font=_font(26))
+    path = tmp_path / "overlay.png"
+    img.save(path)
+
+    rows = scan_overlay_candy([cv2.imread(str(path))])
+
+    assert rows, "candy in the clear window was not read"
+    row = next(iter(rows.values()))
+    assert row.candy == 472
+    assert row.species == "Gible"
