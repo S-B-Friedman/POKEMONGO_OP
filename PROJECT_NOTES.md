@@ -29,7 +29,8 @@ than allowed to quietly disable coverage.
 | Poke Genie import | Done | Round-trips level ranges against recomputed CP |
 | HTTP API | Done, in-memory | Swap `STATE` for `db.py` next |
 | Appraisal bars | Calibrated | 23 tests; real capture, IVs reproduce CP **and** HP |
-| Screen text (name/CP) | **Synthetic only** | Real tesseract in CI, but never on a real screenshot |
+| CP from a screenshot | Checked, not trusted | OCR proposes; only a CP the IVs and HP can reproduce is kept |
+| Species name from a screenshot | **Weak** | No arithmetic to check it against; misreads survive |
 | Grid tile geometry | **Not built** | Needs a real grid screenshot |
 | Scroll tracking | **Not built** | Needs a real swipe video |
 

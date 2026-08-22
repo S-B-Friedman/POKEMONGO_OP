@@ -17,9 +17,19 @@ bar reading here -- against synthetic screenshots painted to match the real UI,
 plus a calibration measured on a real 1206x2622 capture where the extracted IVs
 reproduced both the displayed CP and HP at exactly one level.
 
-What is still unverified on real pixels is the TEXT: name, CP and HP have only
-ever been OCR'd from synthetic images. That is the next thing here likely to be
-wrong in a way the tests cannot see.
+THE TEXT IS NOT TRUSTED, IT IS CHECKED. Tesseract misreads the game's CP font
+into other plausible numbers -- off a clean, tight, high-contrast crop it read
+CP292 for a Pokemon displaying CP252, and CP6274 for one displaying CP4627. No
+threshold fixes that, and a wrong CP pins the wrong level silently.
+
+So cp_candidates() proposes generously across several preprocessings and
+resolve.verify_cp() disposes, keeping only a CP that some level can reproduce
+alongside the observed HP for the IVs read off the bars. Verified end to end on
+real frames: from noisy candidates it recovered CP 292 at level 11 and CP 313
+at level 8. When nothing survives it returns None, which is a real answer.
+
+The species NAME is still read directly and is still the weak point -- it has
+no equivalent arithmetic to check it against.
 
 Bar regions no longer need to be guessed. detect_bars() finds the bars in the
 image; BarLayout's fractions are only the fallback, and --calibrate is for
@@ -680,3 +690,56 @@ def write_candy_csv(rows: dict[int, ResourceRow], path: Path) -> int:
         for sid, row in sorted(rows.items()):
             writer.writerow([sid, row.candy, row.xl_candy if row.xl_candy is not None else ""])
     return len(rows)
+
+
+# --------------------------------------------------------------------------
+# CP: several readings, then let the arithmetic choose
+# --------------------------------------------------------------------------
+
+def cp_candidates(img, band: tuple[float, float] = (0.02, 0.16)) -> list[int]:
+    """Every number the CP area might be, across several preprocessings.
+
+    Deliberately generous and deliberately unfiltered. Tesseract misreads this
+    font -- CP252 came back as CP292 off a clean tight crop -- and no single
+    preprocessing was reliable across devices: a threshold that read three of
+    five frames read zero of five when nudged by one percent of screen height.
+
+    So this stops trying to be right and tries to be complete instead. It
+    proposes; resolve.verify_cp disposes, by asking which of these the species,
+    IVs and HP can actually produce. A wrong candidate in this list is harmless.
+    A missing one is not.
+    """
+    _require("cv2", "opencv-python-headless")
+    _require("pytesseract", "pytesseract")
+    import cv2
+    import numpy as np
+    import pytesseract
+
+    h, w = img.shape[:2]
+    top = img[int(h * band[0]):int(h * band[1]), :]
+    grey = cv2.cvtColor(top, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(top, cv2.COLOR_BGR2HSV)
+
+    variants = []
+    # CP is drawn in white; on a bright background that mask is useless, which
+    # is why the others are here too.
+    white = ((hsv[:, :, 2] > 200) & (hsv[:, :, 1] < 60)).astype(np.uint8) * 255
+    variants.append(255 - white)
+    variants.append(_strokes(grey))
+    _, otsu = cv2.threshold(grey, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    variants.append(otsu)
+    variants.append(255 - otsu)
+
+    found: list[int] = []
+    for variant in variants:
+        big = cv2.resize(variant, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        for psm in (6, 7):
+            try:
+                text = pytesseract.image_to_string(big, config=f"--psm {psm}")
+            except Exception:
+                continue
+            for token in re.findall(r"\d{2,5}", text.replace("O", "0").replace("o", "0")):
+                value = int(token)
+                if 10 <= value <= 6000 and value not in found:
+                    found.append(value)
+    return found
