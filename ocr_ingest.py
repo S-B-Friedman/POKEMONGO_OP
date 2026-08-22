@@ -314,7 +314,14 @@ def read_bar_fills(
             continue
         mid = min(h - 1, (y0 + y1) // 2)
         r = bar_reading(fill_m[mid][x0:x1].tolist(), track_m[mid][x0:x1].tolist())
-        fills[stat] = r.ratio
+        # BarReading.plausible exists for this and was not being consulted. A
+        # scanline that misses the bar has no track and no segments, so it reads
+        # 0.0 filled -- and 0.0 is a legal IV, scoring perfect confidence. Two
+        # rows of a real scan came back 0/0/0 at confidence 1.0 off screens with
+        # no appraisal open at all: a confident answer about a Pokemon that was
+        # not there. An empty bar and an absent bar are different things.
+        if r.plausible:
+            fills[stat] = r.ratio
     return fills
 
 

@@ -395,3 +395,23 @@ def test_an_ambiguous_spread_is_left_unnamed():
     assert any("consistent with CP/HP" in w for w in rec.warnings)
     # The alternatives are named so a human can settle it.
     assert any("Blaziken" in w for w in rec.warnings)
+
+
+# --------------------------------------------------------------------------
+# The plan's state markers.
+
+def test_state_markers_render_for_a_set_of_states():
+    """Regression: no marker had rendered since friendship became a frozenset.
+
+    run.py looked the SET up in a dict keyed by strings, so .get() returned the
+    default every time. The README's own example output showed MetagrossL and
+    TyranitarS, which the code could no longer produce.
+    """
+    from run import state_marker
+
+    assert state_marker(frozenset({"lucky"})) == "L"
+    assert state_marker(frozenset({"shadow"})) == "S"
+    assert state_marker(frozenset({"normal"})) == ""
+    # The case the frozenset exists for, and the one the old lookup could never
+    # show: both discounts apply, so both must be visible.
+    assert state_marker(frozenset({"lucky", "purified"})) == "LP"

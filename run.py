@@ -22,10 +22,28 @@ DEFAULT_CSV = HERE / "sample_data" / "collection.csv"
 DEFAULT_CANDY = HERE / "sample_data" / "candy_inventory.csv"
 
 
+def state_marker(states) -> str:
+    """Letters for the cost-affecting states a Pokemon is in.
+
+    `states` is a frozenset, not one label -- a purified Pokemon that was later
+    traded is both purified and lucky, and they pull in the same direction while
+    shadow pulls the other way. Looking the SET up in a dict keyed by strings
+    silently returned the default every time, so no marker had rendered since
+    friendship became a set, and the one case the set exists to express could
+    never be shown at all.
+    """
+    return "".join(
+        letter for state, letter in
+        (("lucky", "L"), ("shadow", "S"), ("purified", "P"))
+        if state in states
+    )
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--source", choices=("csv", "pokegenie", "mysql"), default="csv",
-                    help="csv = flat pre-joined schema; pokegenie = a Scan Pro export")
+    ap.add_argument("--source", choices=("csv", "pokegenie", "scan", "mysql"), default="csv",
+                    help="csv = flat pre-joined schema; pokegenie = a Scan Pro "
+                         "export; scan = the CSV ocr_ingest.py writes")
     ap.add_argument("--csv", type=Path, default=DEFAULT_CSV, help="collection CSV (source=csv)")
     ap.add_argument("--candy", type=Path, default=DEFAULT_CANDY, help="candy inventory CSV")
     ap.add_argument("--stardust", type=int, default=100_000, help="stardust budget")
@@ -43,6 +61,18 @@ def main(argv=None) -> int:
 
     if args.source == "mysql":
         collection = load_from_mysql()
+    elif args.source == "scan":
+        # The screenshot path ends here. ocr_ingest.py writes what it saw; this
+        # solves each row's level from its CP and HP and joins the base stats,
+        # which is the step that used to be a sentence of documentation.
+        from pogo_opt.importers.scan import import_scan
+
+        result = import_scan(args.csv)
+        print(result.summary())
+        if not result.collection:
+            raise SystemExit("nothing usable in the scan")
+        collection = result.collection
+        print()
     elif args.source == "pokegenie":
         from pogo_opt.importers.pokegenie import import_csv
 
@@ -130,9 +160,7 @@ def main(argv=None) -> int:
         # The marker names the state, because they do not pull the same way:
         # lucky and purified make a power-up cheaper, shadow makes it dearer.
         # A single "*" for all three said only "this one is unusual".
-        tag = {"lucky": "L", "shadow": "S", "purified": "P"}.get(
-            s.pokemon.friendship, ""
-        )
+        tag = state_marker(s.pokemon.friendship)
         label = f"{s.pokemon.name}{tag}"
         print(
             f"{label:<{name_w}}  {s.pokemon.level:>5} ->  {s.target_level:<5} "
