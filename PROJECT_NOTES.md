@@ -7,8 +7,8 @@ exists for the things that are expensive to reconstruct from code alone.
 
 ## Where each piece stands
 
-355 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
-**no skips**. 348 need nothing beyond `requirements-dev.txt`; the other 7 are
+356 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 348 need nothing beyond `requirements-dev.txt`; the other 8 are
 the image path, needing OpenCV, Pillow and the tesseract binary, all of which
 CI installs. A test that skips itself is not a test that passed, and the
 summary line does not distinguish them — so the extras are installed rather
@@ -17,7 +17,7 @@ than allowed to quietly disable coverage.
 | Component | State | Verified how |
 |---|---|---|
 | Optimizer | Done | 137 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
-| Image path | Done | 7 tests, synthetic screenshots painted like the real UI |
+| Image path | Done | 8 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
 | Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (75 tests) |
 | Level solver | Done | 37 tests; round-trips across levels and IV spreads |
@@ -30,7 +30,7 @@ than allowed to quietly disable coverage.
 | HTTP API | Done, in-memory | Swap `STATE` for `db.py` next |
 | Appraisal bars | Calibrated | 23 tests; real capture, IVs reproduce CP **and** HP |
 | CP from a screenshot | Checked, not trusted | OCR proposes; only a CP the IVs and HP can reproduce is kept |
-| Species from a screenshot | Checked, not trusted | Numbers narrow 1,486 to a handful; text only chooses within it |
+| Species from a screenshot | Checked, not trusted | 15/18 on real frames, 0 wrong; numbers narrow 1,486, text chooses within |
 | Resource row | Located, not assumed | Found by its own labels; reads exactly at 8 of 8 screen positions |
 | Grid tile geometry | **Not built** | Needs a real grid screenshot |
 | Scroll tracking | **Not built** | Needs a real swipe video |
@@ -73,6 +73,49 @@ connection string. Adding a tenant key to thousands of live rows is not.
 **Objective is marginal gain, not absolute rating.** Maximizing total rating of
 the chosen set just picks whatever was already strongest. The question is what
 to *spend on*, which is a question about improvement per unit cost.
+
+---
+
+## Is the OCR done?
+
+Reading **one** Pokémon: yes, and measured. Reading a **collection**: no, and the
+missing pieces are the ones that would let this replace Poke Genie.
+
+Measured over all 19 real frames available (two captures, 18 with an identifiable
+subject), scoring the name against the "This X was caught on …" line — a
+different part of the screen from the one being read:
+
+```
+name matched against 1,024 species: 15/18 correct, 0 WRONG, 3 unread
+```
+
+**Zero wrong is the number that matters**, and the three misses are all
+nicknames: "Daj mahal 96" (a Zamazenta), "Drag'nite", "Sanji 100" (a Blaziken).
+The matcher declines rather than forcing a nickname onto the nearest species,
+which is the correct failure. Those three are also exactly the case
+`verify_species()` exists for — CP, HP and the IV bars identify a Pokémon whose
+name is unreadable, so the arithmetic can recover what the text cannot.
+
+That measurement is also what caught `read_species_name()` raising `NameError`
+on every call that supplied a species list: `ocr_ingest` never imported
+`match_species_name`. Every internal caller passes no list and takes the regex
+path, so nothing in the repo touched the broken branch. It took running the
+accurate path against real frames — which nobody had done — to find that the
+accurate path did not run at all.
+
+What is *not* built, and what it costs:
+
+| Piece | State | Consequence |
+|---|---|---|
+| Per-Pokémon read (bars, CP, species, level) | Done, measured | Works on a paused screen |
+| Resource row (candy) | Done, measured | One pause per family |
+| Grid tile geometry | **Not built** | Cannot enumerate a collection from the grid |
+| Scroll tracking | **Not built** | Cannot tell one Pokémon's frames from the next's |
+
+Without the last two, a 1,500-Pokémon collection needs 1,500 manual pauses —
+which is the same manual work Poke Genie asks for, so the OCR does not yet
+remove the dependency it was meant to remove. Both are blocked on capture data
+rather than on design: a real grid screenshot, and a real swipe video.
 
 ---
 

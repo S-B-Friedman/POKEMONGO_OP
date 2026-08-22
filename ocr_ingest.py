@@ -57,6 +57,7 @@ from pogo_opt.ingest import (
     parse_resource_row,
     find_bar_cluster,
     find_candy_anchor,
+    match_species_name,
     resource_number,
 )
 

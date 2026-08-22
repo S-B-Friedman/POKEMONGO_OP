@@ -167,6 +167,28 @@ def _resource_card(path, h, w, row_fraction):
     return path
 
 
+def test_reading_a_name_against_a_species_list_works_at_all(tmp_path):
+    """Regression: this raised NameError on every call that supplied a list.
+
+    read_species_name() delegates to match_species_name() for the accurate path
+    -- fuzzy-matching the text against all 1,024 distinct species names -- and
+    ocr_ingest never imported it. Every internal caller passes no list and takes
+    the regex path, so nothing in the repo touched the broken branch, and the
+    one measurement that would have caught it is the one nobody had run: reading
+    real names off real frames.
+    """
+    pytest.importorskip("pytesseract")
+    if shutil.which("tesseract") is None:
+        pytest.skip("tesseract binary not on PATH")
+    from ocr_ingest import load_known_names, read_species_name
+
+    names = load_known_names(None)
+    assert len(names) > 900, "reference species list did not load"
+
+    path = _resource_card(tmp_path / "named.png", 2340, 1080, 0.66)
+    assert read_species_name(cv2.imread(str(path)), names) == "Swinub"
+
+
 @pytest.mark.parametrize("h,w,row", [
     (2340, 1080, 0.66),    # the shape _RESOURCE_BAND was calibrated on
     (1920, 1080, 0.71),    # 9:16, where the row falls past the band's cutoff
