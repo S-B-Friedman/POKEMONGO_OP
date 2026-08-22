@@ -17,6 +17,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from statistics import median
+from typing import Iterable
 
 from .costs import MAX_LEVEL, MIN_LEVEL, STEP, cp_multiplier
 
@@ -319,3 +320,68 @@ def resolve_run(
             rec.warnings.append("no level fits this CP and IV combination")
 
     return rec
+
+
+# --------------------------------------------------------------------------
+# Letting arithmetic referee the OCR
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CPVerdict:
+    """One CP candidate, and whether the game's own arithmetic accepts it."""
+
+    cp: int
+    levels: list[float]
+
+    @property
+    def valid(self) -> bool:
+        return bool(self.levels)
+
+    @property
+    def unambiguous(self) -> bool:
+        return len(self.levels) == 1
+
+
+def verify_cp(
+    base_attack: int, base_defense: int, base_stamina: int,
+    attack_iv: int, defense_iv: int, stamina_iv: int,
+    candidates: Iterable[int],
+    hp: int,
+) -> CPVerdict | None:
+    """Pick the CP reading that the species, IVs and HP can actually produce.
+
+    OCR proposes; this disposes. Tesseract does not merely fail to read the
+    game's CP font -- it misreads it into other plausible numbers. On a clean,
+    tightly cropped, high-contrast frame it returned CP292 for a Pokemon
+    displaying CP252, and CP6274 for one displaying CP4627. Nothing downstream
+    could tell those apart from a correct read, and a wrong CP silently pins the
+    wrong level, which is the input everything else is built on.
+
+    It cannot be tuned away, so it is checked instead. A CP is only accepted if
+    some level reproduces both it and the observed HP for these IVs. Every
+    misread above fails that, including one off by a single digit: for a Pikachu
+    with 15/14/14 and 55 HP, 292 resolves to level 11 and 291 resolves to
+    nothing at all.
+
+    This needs IVs, which is why it belongs to the appraisal screen -- the one
+    place that shows the bars and the CP together.
+
+    Returns None when no candidate survives. That is a real answer: it means the
+    frame was not read well enough to use, which is worth far more than a
+    confident wrong number.
+    """
+    best: CPVerdict | None = None
+    for cp in candidates:
+        if cp is None or cp <= 0:
+            continue
+        levels = levels_from_cp(
+            base_attack, base_defense, base_stamina,
+            attack_iv, defense_iv, stamina_iv, int(cp), hp,
+        )
+        if not levels:
+            continue
+        verdict = CPVerdict(cp=int(cp), levels=levels)
+        # An unambiguous reading beats one that leaves several levels open.
+        if best is None or (verdict.unambiguous and not best.unambiguous):
+            best = verdict
+    return best

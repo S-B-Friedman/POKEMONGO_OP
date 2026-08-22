@@ -178,3 +178,56 @@ def test_unknown_species_leaves_level_unsolved():
     rec = resolve_run(_frames(20, name="Missingno"), BASE)
     assert rec.level is None
     assert rec.attack_iv == 15
+
+
+# --------------------------------------------------------------------------
+# Arithmetic referees the OCR
+# --------------------------------------------------------------------------
+#
+# Tesseract does not merely fail to read the game's CP font -- it misreads it
+# into other plausible numbers. Off a clean, tightly cropped, high-contrast
+# frame it returned CP292 for a Pokemon displaying CP252, and CP6274 for one
+# displaying CP4627. Nothing downstream can tell those from a correct read, and
+# a wrong CP pins the wrong level, which is the input everything else uses.
+#
+# So the reading is checked rather than trusted: a CP is accepted only if some
+# level reproduces both it and the observed HP for the IVs read off the bars.
+
+from pogo_opt.resolve import verify_cp  # noqa: E402
+
+# Pikachu, IVs 15/14/14, 55 HP -- measured off a real appraisal screen, where
+# the true CP of 292 resolves to exactly level 11.
+PIKACHU = dict(base_attack=112, base_defense=96, base_stamina=111,
+               attack_iv=15, defense_iv=14, stamina_iv=14, hp=55)
+
+
+def test_the_true_cp_is_picked_out_of_misreads():
+    v = verify_cp(candidates=[38, 232, 292, 791], **PIKACHU)
+    assert v is not None and v.cp == 292
+    assert v.levels == [11.0] and v.unambiguous
+
+
+def test_every_misread_is_rejected():
+    """Including one wrong by a single digit."""
+    for bad in (232, 291, 293, 792, 6274):
+        assert verify_cp(candidates=[bad], **PIKACHU) is None
+
+
+def test_no_valid_candidate_returns_none_rather_than_a_guess():
+    """A frame that was not read well enough to use is a real answer, and a
+    much better one than a confident wrong number."""
+    assert verify_cp(candidates=[1, 2, 3], **PIKACHU) is None
+    assert verify_cp(candidates=[], **PIKACHU) is None
+
+
+def test_junk_candidates_do_not_disturb_the_right_one():
+    """The proposer is deliberately generous, so noise must be harmless."""
+    noisy = [38, 1, 9999, 292, 4627, 15, 313]
+    v = verify_cp(candidates=noisy, **PIKACHU)
+    assert v is not None and v.cp == 292
+
+
+def test_wrong_ivs_reject_a_correct_cp():
+    """The check is only as good as the IVs, and it fails closed."""
+    wrong = dict(PIKACHU, attack_iv=0, defense_iv=0, stamina_iv=0)
+    assert verify_cp(candidates=[292], **wrong) is None
