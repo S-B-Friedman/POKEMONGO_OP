@@ -65,9 +65,32 @@ from pogo_opt.ingest import (
 log = logging.getLogger("ocr_ingest")
 
 # Mean absolute difference, on a 64x64 greyscale thumbnail, below which two
-# frames are treated as the same screen. Used both to skip settling frames and
-# to group a swipe-through into one run per Pokemon, so the two cannot drift.
+# frames are treated as the same screen. Used when sampling to skip frames that
+# repeat one already kept.
 _SAME_SCREEN_DIFF = 4.0
+
+# Grouping a swipe-through uses the band carrying the species name and CP, not
+# the whole frame. Measured over a real 50s capture (1080x1920, 30fps, sampled
+# every 5th frame), the difference between consecutive frames is:
+#
+#     region              within a Pokemon     across a swipe
+#     name band 0.40-0.47        0.34               20+
+#     whole frame                2.39                8
+#
+# The appraisal screen animates -- the team leader moves, the sprite breathes,
+# the background shifts -- so a whole-frame comparison sees motion on every
+# frame of a Pokemon that is merely sitting there. On that capture it cut a
+# 16-Pokemon swipe into 118 groups. The name band holds still until the name
+# itself changes, which is exactly the event being looked for.
+_IDENTITY_BAND = (0.40, 0.47)
+_IDENTITY_DIFF = 5.0
+
+# Groups shorter than this are swipe frames, not Pokemon. Mid-swipe the screen
+# matches neither neighbour, so each transitional frame becomes a group of one:
+# 91 of those 118 were exactly that. At the default sampling this is about half
+# a second, well under the time anyone spends looking at a Pokemon -- but it is
+# a frame count, so raising --every-n raises the real duration with it.
+_MIN_GROUP_FRAMES = 3
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -374,17 +397,23 @@ def iter_video_frames(video_path: Path, every_n: int, work_dir: Path,
 # Driver
 # --------------------------------------------------------------------------
 
-def group_consecutive(sources, threshold: float = _SAME_SCREEN_DIFF):
-    """Split an ordered list of (label, path) into one group per screen.
+def group_consecutive(sources, threshold: float = _IDENTITY_DIFF,
+                      min_frames: int = _MIN_GROUP_FRAMES):
+    """Split an ordered list of (label, path) into one group per Pokemon.
 
-    A swipe-through holds on each Pokemon for a second or more and then moves,
-    so "which Pokemon is this" is answered by WHEN the frame was taken, not by
-    what was read off it. Consecutive frames that look the same are the same
-    Pokemon; a jump in the image is the swipe.
+    A swipe-through holds on each Pokemon and then moves, so "which Pokemon is
+    this" is answered by WHEN the frame was taken, not by what was read off it.
+    Consecutive frames whose identity band matches are the same Pokemon; a jump
+    is the swipe.
 
     Grouping in time is what makes duplicates survive. Identity-based collapsing
     cannot tell three Machamps at CP 2451 apart from three readings of one
     Machamp -- and a box of 1,500 is full of exactly that.
+
+    Groups shorter than `min_frames` are dropped as mid-swipe frames. Mid-swipe
+    the screen matches neither neighbour, so every transitional frame becomes a
+    group of one and would otherwise be reported as a Pokemon that was never on
+    screen long enough to read.
     """
     _require("cv2", "opencv-python-headless")
     import cv2
@@ -393,11 +422,12 @@ def group_consecutive(sources, threshold: float = _SAME_SCREEN_DIFF):
     groups: list[list] = []
     previous = None
     for item in sources:
-        path = item[1]
-        img = cv2.imread(str(path))
+        img = cv2.imread(str(item[1]))
         if img is None:
             continue
-        small = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (64, 64))
+        h = img.shape[0]
+        band = img[int(h * _IDENTITY_BAND[0]):int(h * _IDENTITY_BAND[1]), :]
+        small = cv2.resize(cv2.cvtColor(band, cv2.COLOR_BGR2GRAY), (64, 16))
         moved = previous is None or float(
             np.mean(np.abs(small.astype(int) - previous.astype(int)))
         ) >= threshold
@@ -405,7 +435,12 @@ def group_consecutive(sources, threshold: float = _SAME_SCREEN_DIFF):
             groups.append([])
         groups[-1].append(item)
         previous = small
-    return groups
+
+    kept = [g for g in groups if len(g) >= min_frames]
+    if len(groups) != len(kept):
+        log.info("%d runs, %d dropped as mid-swipe (under %d frames)",
+                 len(groups), len(groups) - len(kept), min_frames)
+    return kept
 
 
 def _majority(values):
@@ -459,8 +494,22 @@ def vote_records(records: list[ScannedPokemon]) -> ScannedPokemon:
         date_caught=_majority([r.date_caught for r in records]),
         source_frame=records[0].source_frame,
     )
-    # Only warn about what survived the vote. A warning from a single bad frame
-    # describes a reading that was outvoted and is no longer being reported.
+    # Carry forward any warning that most frames raised. A warning seen once
+    # describes a reading that was outvoted and is no longer being reported; a
+    # warning seen on nearly every frame describes a standing condition -- a
+    # miscalibrated crop region, say -- which the vote cannot fix and must not
+    # hide.
+    #
+    # Dropping them all, which this did, produced the worst run of the project:
+    # a real 50-second capture came back as "16 records (0 flagged for review)"
+    # with the IVs read off the wrong part of the screen. Every frame had said
+    # "low IV read confidence -- check bar crop region" and the consensus record
+    # said nothing at all.
+    seen = Counter(w for r in records for w in r.warnings)
+    for warning, count in seen.items():
+        if count * 2 >= len(records):
+            winner.warnings.append(warning)
+
     if winner.name is None:
         winner.warnings.append("no species name agreed across frames")
     if winner.cp is None:

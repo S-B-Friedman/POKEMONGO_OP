@@ -275,3 +275,38 @@ def test_nothing_agreed_is_said_out_loud():
     assert not voted.is_usable
     assert any("no species name agreed" in w for w in voted.warnings)
     assert any("no CP agreed" in w for w in voted.warnings)
+
+
+def test_a_standing_warning_survives_the_vote():
+    """Regression, and the worst run this project has produced.
+
+    vote_records built a fresh record and kept none of the per-frame warnings,
+    so a real 50-second capture came back as "16 records (0 flagged for review)"
+    with the IVs read off the wrong part of the screen. Every single frame had
+    said "low IV read confidence -- check bar crop region"; the consensus record
+    said nothing. A vote can settle a disagreement, but it cannot fix a
+    condition every frame agrees on, and must not hide it.
+    """
+    def warned(**kw):
+        r = ScannedPokemon(name="Palkia", cp=4627, attack_iv=15,
+                           defense_iv=15, stamina_iv=15, **kw)
+        r.warnings.append("low IV read confidence (0.497) -- check bar crop region")
+        return r
+
+    voted = vote_records([warned() for _ in range(6)])
+    assert any("check bar crop region" in w for w in voted.warnings)
+    assert not voted.is_usable or voted.warnings
+
+
+def test_a_one_off_warning_does_not_survive_the_vote():
+    """The other half: a warning from a single outvoted frame describes a
+    reading that is no longer being reported, so repeating it is noise."""
+    clean = [ScannedPokemon(name="Palkia", cp=4627, attack_iv=15,
+                            defense_iv=15, stamina_iv=15) for _ in range(5)]
+    bad = ScannedPokemon(name="Palkia", cp=None, attack_iv=15,
+                         defense_iv=15, stamina_iv=15)
+    bad.warnings.append("CP not found")
+
+    voted = vote_records(clean + [bad])
+    assert voted.cp == 4627
+    assert voted.warnings == []
