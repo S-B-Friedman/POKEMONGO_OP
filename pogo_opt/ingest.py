@@ -251,6 +251,29 @@ def find_bar_cluster(
     return best[1] if best else None
 
 
+# Fraction of a segment's width discarded at each end before counting fill.
+#
+# Segment ends are rounded and anti-aliased, so those pixels blend toward the
+# card behind them: they pass the desaturated track test and fail the saturated
+# fill test, on a segment that is visibly full. Measured on a real 1080x1920
+# capture, a completely full segment read 0.960-0.990 rather than 1.000 -- four
+# pixels in a hundred, at both ends of all three segments.
+#
+# That is small and it is systematic, which is the bad combination. The IV still
+# rounds correctly, but iv_confidence measures distance from a legal IV and so
+# reported 0.20 for a perfectly clean 15/15 bar; 231 of 270 readable frames in
+# that capture came back under 0.5, the value documented as meaning "the crop
+# region is wrong". It was not wrong. Every one of those readings was flagged
+# for review and none of them needed it.
+_SEGMENT_CAP_FRACTION = 0.02
+
+
+def trim_segment_caps(a: int, b: int) -> tuple[int, int]:
+    """Shrink one segment run past its anti-aliased ends."""
+    pad = max(1, round((b - a + 1) * _SEGMENT_CAP_FRACTION))
+    return (a + pad, b - pad) if b - a > 2 * pad else (a, b)
+
+
 def bar_reading(
     fill: Sequence[bool],
     track: Sequence[bool],
@@ -271,6 +294,7 @@ def bar_reading(
     if cluster and len(runs) > IV_BAR_SEGMENTS:
         runs = find_bar_cluster(runs) or runs
 
+    runs = [trim_segment_caps(a, b) for a, b in runs]
     total = sum(b - a + 1 for a, b in runs)
     filled = sum(1 for a, b in runs for x in range(a, b + 1) if fill[x])
     ratio = (filled / total) if total else 0.0

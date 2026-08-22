@@ -60,6 +60,7 @@ from pogo_opt.ingest import (
     find_candy_anchor,
     match_species_name,
     resource_number,
+    trim_segment_caps,
 )
 
 log = logging.getLogger("ocr_ingest")
@@ -228,6 +229,9 @@ def detect_bars(img, *, min_length: int = 20) -> dict[str, BarReading] | None:
         if trio is None:
             continue
         row_fill = fill_m[y]
+        # Same cap trim as bar_reading: the rounded, anti-aliased segment ends
+        # count as track and never as fill, which biases every reading low.
+        trio = [trim_segment_caps(a, b) for a, b in trio]
         total = sum(b - a + 1 for a, b in trio)
         filled = sum(1 for a, b in trio for x in range(a, b + 1) if row_fill[x])
         candidates.append((
