@@ -307,3 +307,21 @@ def test_overlay_candy_reads_only_the_clear_window(tmp_path):
     row = next(iter(rows.values()))
     assert row.candy == 472
     assert row.species == "Gible"
+
+
+def test_overlay_candy_is_not_merged_by_default(tmp_path):
+    """The overlay reader must not reach the candy CSV unless asked for.
+
+    It reads the right column in the right place -- and the candy icon abuts the
+    digits and is read as one, so MARILL CANDY 1,211 came back as 41,211. That
+    is correctly grouped in thousands, plausible as a count, and 34x the truth,
+    so nothing downstream can catch it. A number the solver spends against has
+    to be trustworthy by default, not merely usually right.
+    """
+    from ocr_ingest import parse_args
+
+    args = parse_args(["--images", str(tmp_path),
+                       "--candy-out", str(tmp_path / "c.csv")])
+    assert args.candy_from_overlay is False
+    assert parse_args(["--images", str(tmp_path),
+                       "--candy-from-overlay"]).candy_from_overlay is True

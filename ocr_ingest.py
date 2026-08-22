@@ -649,7 +649,10 @@ def vote_records(records: list[ScannedPokemon]) -> ScannedPokemon:
     return winner
 
 
-def main() -> int:
+def parse_args(argv=None):
+    """Build the CLI parser. Separate from main() so it can be tested --
+    a flag whose default matters is worth pinning, and --candy-from-overlay
+    defaulting to on would feed the solver numbers known to be wrong."""
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -670,6 +673,12 @@ def main() -> int:
                          "screens' resource row. Needs the appraisal CLOSED: "
                          "the overlay's rating badge and team leader sit on top "
                          "of that row")
+    ap.add_argument("--candy-from-overlay", action="store_true",
+                    help="also read candy off appraisal frames. OFF by default: "
+                         "the candy icon abuts the digits there and is read as "
+                         "one, so 1,211 came back as 41,211 -- correctly grouped "
+                         "and 34x too high. Use a pass with the appraisal CLOSED "
+                         "instead, where the icon is removed by hue")
     ap.add_argument("--no-verify", action="store_true",
                     help="skip checking the CP against the IVs and HP; faster, "
                          "and lets an unverifiable CP through")
@@ -677,7 +686,11 @@ def main() -> int:
                     help="keep one frame per screen instead of voting across "
                          "all of them; faster, and much less robust")
     ap.add_argument("-v", "--verbose", action="store_true")
-    args = ap.parse_args()
+    return ap.parse_args(argv)
+
+
+def main() -> int:
+    args = parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -762,16 +775,15 @@ def main() -> int:
     # screens yields both the collection and the candy inventory.
     if args.candy_out:
         images = [cv2.imread(str(pth)) for _, pth in sources]
-        # Two readers, because the row is legible in two different situations.
-        # The clean detail card gives all three columns at once; the appraisal
-        # overlay gives only what slides through the gap between the rating
-        # badge and the team leader, but it gives it from the same pass that
-        # read the IVs. Merged rather than chosen between, so one capture of
-        # either kind works.
         rows = scan_resource_rows(images)
-        for dex, row in scan_overlay_candy(images).items():
-            if dex not in rows:
-                rows[dex] = row
+        if args.candy_from_overlay:
+            log.warning(
+                "reading candy off the appraisal overlay: values there can "
+                "carry a spurious leading digit and are not trustworthy on "
+                "their own -- check them before acting on the plan"
+            )
+            for dex, row in scan_overlay_candy(images).items():
+                rows.setdefault(dex, row)
         written = write_candy_csv(rows, args.candy_out)
         if written:
             print(f"Wrote candy for {written} families to {args.candy_out}.")
@@ -1229,9 +1241,29 @@ def scan_overlay_candy(frames, ref=None) -> dict[int, ResourceRow]:
 
     Swiping changes the geometry. The badge and the leader belong to the
     overlay, so they hold still while the card slides, and every column crosses
-    the gap between them on its way past. Reading that gap on each frame of a
-    50-second capture recovered Gible 472, Bagon 968 and Dratini 192 -- three
-    families, from the same pass that read the IVs, with no second recording.
+    the clear space on its way past. That much works: Gible 472, Bagon 968 and
+    Dratini 192 off one capture, Tauros 619 off another, all correct.
+
+    IT IS STILL OFF BY DEFAULT, because "works when it works" is not a property
+    worth shipping for a number the solver spends against. The candy icon sits
+    immediately left of the digits and is read as one of them: MARILL CANDY
+    1,211 came back as 41,211. That passes every check available -- it is
+    correctly grouped in thousands, it is a plausible count, and it is 34 times
+    the truth.
+
+    Three fixes were tried and none held. Masking by saturation fails because
+    the overlay tints everything blue, so the icon (S=168) and the digits
+    (S=170) are the same; masking removes the digits too. A second reading
+    method disagrees exactly where the icon is -- 1,211 / 31,211 / 71,211 across
+    scales and page-segmentation modes, stable in the suffix and noise in the
+    leading digit. Majority across preprocessings picks 71,211.
+
+    The clean detail card does not have this problem at all: there the icon is
+    orange against dark teal text and _text_mask removes it by hue, which is why
+    a Swinub row reads 521,865 / 1,645 / 293 exactly. So the honest advice is a
+    short pass with the appraisal CLOSED, one pause per family. This is left in
+    place, behind --candy-from-overlay, because the geometry is right and only
+    the icon is in the way.
 
     Majority-voted per family, for the same reason every other reading here is.
     """
