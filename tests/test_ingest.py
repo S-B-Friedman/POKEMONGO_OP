@@ -310,3 +310,57 @@ def test_a_one_off_warning_does_not_survive_the_vote():
     voted = vote_records(clean + [bad])
     assert voted.cp == 4627
     assert voted.warnings == []
+
+
+# --------------------------------------------------------------------------
+# Refereeing a voted record against the arithmetic.
+
+from ocr_ingest import verify_record  # noqa: E402
+
+
+def test_an_impossible_cp_is_removed_not_reported():
+    """From a real capture: a Dragonite at CP 7 beside a good IV spread.
+
+    cp_candidates() and verify_cp() both existed and were tested, and the scan
+    driver called neither -- the module docstring described a propose-and-verify
+    pipeline that was never wired up. Whatever the regex scraped off the text
+    went straight to the CSV.
+    """
+    rec = ScannedPokemon(name="Dragonite", cp=7, total_hp=184,
+                         attack_iv=15, defense_iv=14, stamina_iv=15)
+    verify_record(rec, [7])
+    assert rec.cp is None
+    assert any("discarded" in w for w in rec.warnings)
+
+
+def test_a_correct_cp_survives_verification():
+    rec = ScannedPokemon(name="Garchomp", cp=4365, total_hp=208,
+                         attack_iv=15, defense_iv=15, stamina_iv=11)
+    verify_record(rec, [4365])
+    assert rec.cp == 4365
+    assert rec.warnings == []
+
+
+def test_an_alternate_form_is_not_rejected_as_impossible():
+    """Regression caught before shipping, and the dangerous direction.
+
+    A screenshot says "Palkia" for both the base species and the Origin Forme.
+    At level 49 with perfect IVs those are CP 4458 and CP 4627, so checking the
+    base form alone rejects a completely correct reading of the other -- 4627
+    with HP 170, which resolves exactly. Deleting good data is worse than the
+    unchecked CP this verification exists to catch.
+    """
+    rec = ScannedPokemon(name="Palkia", cp=4627, total_hp=170,
+                         attack_iv=15, defense_iv=15, stamina_iv=15)
+    verify_record(rec, [4627])
+    assert rec.cp == 4627
+    assert rec.warnings == []
+
+
+def test_verification_declines_without_the_numbers_it_needs():
+    """No HP means no second equation, so there is nothing to check against.
+    Leaving the CP alone is right; inventing a verdict would not be."""
+    rec = ScannedPokemon(name="Dragonite", cp=7, total_hp=None,
+                         attack_iv=15, defense_iv=14, stamina_iv=15)
+    verify_record(rec, [7])
+    assert rec.cp == 7

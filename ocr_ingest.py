@@ -401,6 +401,71 @@ def iter_video_frames(video_path: Path, every_n: int, work_dir: Path,
 # Driver
 # --------------------------------------------------------------------------
 
+def verify_record(rec: ScannedPokemon, candidates) -> ScannedPokemon:
+    """Referee a voted record against the arithmetic, in place.
+
+    The module docstring has claimed since the CP work landed that
+    cp_candidates() proposes and resolve.verify_cp() disposes. It did not: both
+    exist, both are tested, and nothing in the scan driver ever called either.
+    So the CP written to the CSV was whatever the regex scraped off the text,
+    unchecked -- which is how a real capture produced a Dragonite at CP 7 and a
+    Sceptile at CP 27, each sitting beside a perfectly good IV spread.
+
+    Nothing here invents a value. A CP that no level can reproduce alongside the
+    observed HP is removed and said out loud, because no CP is worth more than a
+    wrong one.
+    """
+    if not rec.name or rec.total_hp is None:
+        return rec
+    if None in (rec.attack_iv, rec.defense_iv, rec.stamina_iv):
+        return rec
+
+    try:
+        from pogo_opt.reference import default_reference
+        from pogo_opt.resolve import verify_cp
+
+        forms = default_reference().forms(rec.name)
+    except Exception:
+        return rec
+    if not forms:
+        return rec
+
+    proposed = list(dict.fromkeys(
+        [c for c in candidates if c] + ([rec.cp] if rec.cp else [])
+    ))
+    if not proposed:
+        return rec
+
+    # Every form of the name, not just the base one. A screenshot says "Palkia"
+    # for both the base species and the Origin Forme, and at level 49 with
+    # perfect IVs those are CP 4458 and CP 4627. Checking the base form alone
+    # threw away a completely correct reading of the Origin Forme -- 4627 with
+    # HP 170, which resolves exactly.
+    verdict = None
+    for species in forms:
+        verdict = verify_cp(
+            species.base_attack, species.base_defense, species.base_stamina,
+            rec.attack_iv, rec.defense_iv, rec.stamina_iv,
+            proposed, rec.total_hp,
+        )
+        if verdict is not None:
+            break
+    if verdict is None:
+        if rec.cp is not None:
+            rec.warnings.append(
+                f"CP {rec.cp} discarded: no level reproduces it with HP "
+                f"{rec.total_hp} for {rec.name} at {rec.attack_iv}/"
+                f"{rec.defense_iv}/{rec.stamina_iv}"
+            )
+        rec.cp = None
+        return rec
+
+    if rec.cp != verdict.cp:
+        rec.warnings.append(f"CP corrected {rec.cp} -> {verdict.cp} by level solve")
+    rec.cp = verdict.cp
+    return rec
+
+
 def group_consecutive(sources, threshold: float = _IDENTITY_DIFF,
                       min_frames: int = _MIN_GROUP_FRAMES):
     """Split an ordered list of (label, path) into one group per Pokemon.
@@ -539,6 +604,9 @@ def main() -> int:
     ap.add_argument("--calibrate", action="store_true",
                     help="dump bar crops from the first frame and exit")
     ap.add_argument("--no-ivs", action="store_true", help="skip appraisal bar reading")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="skip checking the CP against the IVs and HP; faster, "
+                         "and lets an unverifiable CP through")
     ap.add_argument("--one-frame-each", action="store_true",
                     help="keep one frame per screen instead of voting across "
                          "all of them; faster, and much less robust")
@@ -551,6 +619,9 @@ def main() -> int:
     )
 
     layout = BarLayout()
+    if not args.no_verify:
+        _require("cv2", "opencv-python-headless")
+    import cv2
 
     if args.images:
         sources = [
@@ -585,6 +656,7 @@ def main() -> int:
     unique: list[ScannedPokemon] = []
     for group in groups:
         seen: list[ScannedPokemon] = []
+        proposed: set[int] = set()
         for label, path in group:
             try:
                 text = read_text(path, args.engine)
@@ -600,10 +672,20 @@ def main() -> int:
                     log.debug("bar read failed on %s: %s", label, exc)
 
             seen.append(build_record(text, known_names, fills, source_frame=label))
+            # Collected per frame and pooled for the group: the CP band is the
+            # hardest text on the screen, and a candidate any one frame saw is
+            # worth offering to the verifier.
+            if not args.no_verify:
+                try:
+                    proposed.update(cp_candidates(cv2.imread(str(path))))
+                except Exception as exc:
+                    log.debug("CP candidates failed on %s: %s", label, exc)
 
         if not seen:
             continue
         rec = vote_records(seen)
+        if not args.no_verify:
+            rec = verify_record(rec, proposed)
         if rec.is_usable:
             unique.append(rec)
         else:
