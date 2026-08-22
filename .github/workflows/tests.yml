@@ -28,8 +28,17 @@ jobs:
       # pytesseract is only a wrapper; the OCR itself is this binary. Installed
       # so test_text_extraction actually runs -- reading text off a screenshot
       # is the part of the image path with no other coverage.
+      #
+      # DejaVu goes with it. The OCR fixtures render their text with it, and
+      # _font() falls back to Pillow's built-in bitmap font when it is missing --
+      # which is legible at the 90px CP heading and illegible at the 17px
+      # resource-row label. That failure looks like the reader losing the row,
+      # not like a missing font, so pin the font rather than rely on whatever
+      # the runner image happens to ship.
       - name: Install tesseract
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr fonts-dejavu-core
 
       # The OCR extras are installed so tests/test_ocr_pipeline.py actually
       # runs. It skips itself when OpenCV and Pillow are missing, so leaving
