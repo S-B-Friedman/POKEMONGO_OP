@@ -526,18 +526,21 @@ def _words(band, scale: int = 3, psm: int = 6) -> list[tuple[int, str]]:
     ]
 
 
-def _words_xy(band, scale: int = 3, psm: int = 6):
+def _words_xy(band, scale: int = 3, psm: int = 6, upscale: bool = True):
     """-> [(x, y_centre, token)] in original pixels, for one strip.
 
     Same call as _words, keeping the vertical position the caller throws away.
     Unlike _words this does its own upscaling, so the coordinates it divides by
-    scale are the ones it actually read at.
+    scale are the ones it actually read at. Pass upscale=False for a band that
+    arrives already enlarged -- _strokes returns one -- and it will divide by
+    scale without enlarging twice.
     """
     import cv2
     import pytesseract
     from pytesseract import Output
 
-    big = cv2.resize(band, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    big = cv2.resize(band, None, fx=scale, fy=scale,
+                     interpolation=cv2.INTER_CUBIC) if upscale else band
     data = pytesseract.image_to_data(
         big, config=f"--psm {psm}", output_type=Output.DICT
     )

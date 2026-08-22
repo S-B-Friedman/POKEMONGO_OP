@@ -257,6 +257,24 @@ Frames are sampled and near-duplicates skipped. Scanning every frame of a
 60-second clip is 1,800 OCR calls to read a collection that scrolls past maybe
 forty Pokémon.
 
+### Capturing candy
+
+Per-species candy comes from the detail screen's resource row — the
+`STARDUST / <NAME> CANDY / <NAME> CANDY XL` line. No export carries it, so this
+is the only route to the second resource the solver constrains.
+
+**Record the plain detail screen, with no appraisal open.** The row is found by
+searching for its own labels rather than at a fixed height, so it does not
+matter where on the screen it lands or what shape the phone is. It does matter
+that the labels are legible: the appraisal overlay dims them past recovery while
+leaving the numbers readable, and a number whose column cannot be identified is
+not worth having. Measured over one such capture, 18 of 19 frames yielded
+nothing for that reason.
+
+One detail screen shows one species, so a collection needs one pause per
+species — not per Pokémon. Candy is pooled by evolution family, so a hundred
+Swinub, Piloswine and Mamoswine share a single count.
+
 ## Reference data
 
 `pogo_opt/data/reference.json` holds 1,486 species and 384 moves — base stats,

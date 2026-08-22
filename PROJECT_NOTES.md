@@ -216,6 +216,29 @@ to *spend on*, which is a question about improvement per unit cost.
   species, so a collection needs one screen per species — a 7.7s clip yielded
   exactly one.
 
+  **Candy cannot be read off the appraisal overlay, and it is worth knowing why
+  rather than trying again.** Measured across 19 frames of two captures, 1 gave
+  a usable resource row. The other 18 were appraisal frames, and on those:
+
+  - The *values* read fine. Palkia's `129` candy comes back cleanly at 0.683 of
+    screen height under a black-hat.
+  - The *labels* do not read at all. Nothing in the band survives the dimming —
+    not `PALKIA CANDY`, not `STARDUST`, at any threshold tried. So the column
+    cannot be identified by its label, which is how every other path does it.
+  - Position is not a substitute. Mega-capable Pokémon carry an extra Mega
+    Energy element that shifts the row, so a fixed column index reads the wrong
+    number for exactly the Pokémon most worth powering up.
+  - Nor is icon colour, which was the remaining idea. On a clean card the candy
+    icons are distinctly orange (H≈7–8) against the blue stardust icon (H≈143)
+    and would anchor the column well. On the overlay the rating badge (H≈18,
+    x 0.14–0.29) and the team leader (H≈100, x 0.33–0.91) saturate the entire
+    row, and the icons are not separable from either.
+
+  Three independent ways to find the column, all blocked by the same overlay.
+  The practical consequence is a capture instruction, not a code change: **pause
+  on the plain detail screen for each species**, with no appraisal open. The
+  appraisal screen's job here is the IV bars, and those already read.
+
 - **The purified candy discount mostly rounds away.** Per-step candy is small
   and the code takes `ceil`, so `ceil(8 * 0.9) == 8`: the 10% discount is
   invisible on 68 of the 98 half-levels, surfacing only in the 10/12/15/17/20
