@@ -235,3 +235,27 @@ def test_layout_survives_a_different_aspect_ratio(tmp_path):
     fills = read_bar_fills(p, BarLayout())
     for stat, expected in TRUE_FILLS.items():
         assert fills[stat] == pytest.approx(expected, abs=0.03), stat
+
+
+def test_frames_are_grouped_by_when_not_by_what(tmp_path):
+    """A swipe-through is segmented in time, which is what saves duplicates.
+
+    Consecutive look-alike frames are one Pokemon; a jump is the swipe. Grouping
+    on what was READ instead cannot distinguish three Machamps at CP 2451 from
+    three readings of one, and silently kept one of them.
+    """
+    from ocr_ingest import group_consecutive
+
+    a = _resource_card(tmp_path / "a.png", 2340, 1080, 0.66)
+    b = tmp_path / "b.png"
+    img = Image.new("RGB", (1080, 2340), ROW_CARD)
+    d = ImageDraw.Draw(img)
+    d.rectangle([100, 100, 900, 2000], fill=(20, 90, 140))   # a different screen
+    img.save(b)
+
+    held = [(f"a{i}", a) for i in range(12)]
+    swiped = held + [(f"b{i}", b) for i in range(9)]
+
+    assert len(group_consecutive(held)) == 1
+    groups = group_consecutive(swiped)
+    assert [len(g) for g in groups] == [12, 9]

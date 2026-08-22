@@ -253,9 +253,33 @@ bar landed to a legal IV — a value near 0.5 means the crop region is wrong
 rather than the Pokémon being unusual. Output goes to CSV so a bad read gets
 fixed in a spreadsheet instead of by re-running OCR.
 
-Frames are sampled and near-duplicates skipped. Scanning every frame of a
-60-second clip is 1,800 OCR calls to read a collection that scrolls past maybe
-forty Pokémon.
+### Capturing a collection
+
+Record a **swipe-through of detail screens with appraise open** — one Pokémon at
+a time, not the grid. The grid shows a sprite and a CP; the detail screen shows
+everything the solver needs, and appraise stays open across swipes so the IV bars
+come along for free.
+
+```bash
+python ocr_ingest.py --video swipe.mp4 -o scanned.csv
+```
+
+Hold on each Pokémon for a second or so. That is not politeness to the OCR, it is
+the mechanism: frames are grouped **in time**, and every field is voted across
+the frames in a group. Three seconds at 30fps is ~90 readings of one screen, and
+a single misread loses the vote instead of becoming a row in your collection.
+
+Grouping in time is also what keeps duplicates. Two Machamps at CP 2451 are two
+runs of frames, so they stay two Pokémon — identity-based collapsing could not
+tell them from two readings of one, and quietly kept only the first.
+
+`--one-frame-each` reverts to one reading per screen. It is faster and much less
+robust; use it for a quick look, not for a collection you intend to solve
+against.
+
+Frames are sampled every Nth (`--every-n`) rather than every frame. Scanning
+every frame of a 60-second clip is 1,800 OCR calls to read a collection that
+holds on maybe forty Pokémon.
 
 ### Capturing candy
 

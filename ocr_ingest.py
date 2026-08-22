@@ -43,6 +43,7 @@ import csv
 import logging
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 from pogo_opt.ingest import (
@@ -62,6 +63,11 @@ from pogo_opt.ingest import (
 )
 
 log = logging.getLogger("ocr_ingest")
+
+# Mean absolute difference, on a 64x64 greyscale thumbnail, below which two
+# frames are treated as the same screen. Used both to skip settling frames and
+# to group a swipe-through into one run per Pokemon, so the two cannot drift.
+_SAME_SCREEN_DIFF = 4.0
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -310,14 +316,22 @@ def calibrate(image_path: Path, layout: BarLayout, out_dir: Path) -> None:
 # Video handling
 # --------------------------------------------------------------------------
 
-def iter_video_frames(video_path: Path, every_n: int, work_dir: Path):
-    """Yield (label, frame_path) for sampled, visually distinct frames.
+def iter_video_frames(video_path: Path, every_n: int, work_dir: Path,
+                      keep_similar: bool = False):
+    """Yield (label, frame_path) for sampled video frames.
 
     The original wrote every frame to disk and OCR'd each one. A 60-second
     30fps clip is 1,800 frames, so on the Vision API that's 1,800 billed calls
     to scan a collection that scrolls past maybe forty Pokemon. This samples
-    every Nth frame and skips frames that are near-identical to the last kept
-    one, which is what happens while a scroll is settling.
+    every Nth frame.
+
+    `keep_similar` decides what happens to the repeats. Dropping them -- the
+    old unconditional behaviour -- leaves exactly one frame per Pokemon, and one
+    frame cannot be voted on. That quietly contradicted the design: three
+    seconds per Pokemon at 30fps is ~90 frames of one screen, and every claim
+    this pipeline makes about robustness rests on having them. Keep them for a
+    swipe-through, where they are the evidence; drop them for a quick pass where
+    one reading per screen is all that is wanted.
     """
     _require("cv2", "opencv-python-headless")
     import cv2
@@ -339,8 +353,9 @@ def iter_video_frames(video_path: Path, every_n: int, work_dir: Path):
                 continue
 
             small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 64))
-            if previous is not None:
-                if float(np.mean(np.abs(small.astype(int) - previous.astype(int)))) < 4.0:
+            if not keep_similar and previous is not None:
+                same = float(np.mean(np.abs(small.astype(int) - previous.astype(int))))
+                if same < _SAME_SCREEN_DIFF:
                     idx += 1
                     continue
             previous = small
@@ -359,19 +374,100 @@ def iter_video_frames(video_path: Path, every_n: int, work_dir: Path):
 # Driver
 # --------------------------------------------------------------------------
 
-def dedupe(records: list[ScannedPokemon]) -> list[ScannedPokemon]:
-    """Collapse repeats of the same Pokemon, keeping the cleanest read.
+def group_consecutive(sources, threshold: float = _SAME_SCREEN_DIFF):
+    """Split an ordered list of (label, path) into one group per screen.
 
-    A scroll-through shows each Pokemon over several frames; (name, cp) is a
-    good enough identity for a single pass.
+    A swipe-through holds on each Pokemon for a second or more and then moves,
+    so "which Pokemon is this" is answered by WHEN the frame was taken, not by
+    what was read off it. Consecutive frames that look the same are the same
+    Pokemon; a jump in the image is the swipe.
+
+    Grouping in time is what makes duplicates survive. Identity-based collapsing
+    cannot tell three Machamps at CP 2451 apart from three readings of one
+    Machamp -- and a box of 1,500 is full of exactly that.
     """
-    best: dict[tuple[str | None, int | None], ScannedPokemon] = {}
-    for rec in records:
-        key = (rec.name, rec.cp)
-        incumbent = best.get(key)
-        if incumbent is None or len(rec.warnings) < len(incumbent.warnings):
-            best[key] = rec
-    return list(best.values())
+    _require("cv2", "opencv-python-headless")
+    import cv2
+    import numpy as np
+
+    groups: list[list] = []
+    previous = None
+    for item in sources:
+        path = item[1]
+        img = cv2.imread(str(path))
+        if img is None:
+            continue
+        small = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (64, 64))
+        moved = previous is None or float(
+            np.mean(np.abs(small.astype(int) - previous.astype(int)))
+        ) >= threshold
+        if moved:
+            groups.append([])
+        groups[-1].append(item)
+        previous = small
+    return groups
+
+
+def _majority(values):
+    """Most common non-None value, or None when there are none."""
+    present = [v for v in values if v is not None]
+    if not present:
+        return None
+    return Counter(present).most_common(1)[0][0]
+
+
+def vote_records(records: list[ScannedPokemon]) -> ScannedPokemon:
+    """One consensus record from every frame showing the same Pokemon.
+
+    Each field is voted independently, because OCR does not fail on a whole
+    frame at once -- it drops the name on one and mangles the CP on another, and
+    picking a single "best" frame throws away the good half of every other one.
+    That was the previous behaviour: keep whichever record carried the fewest
+    warnings and discard the rest.
+
+    IVs are voted as a TRIPLE rather than per stat. They are read from three
+    bars of one image, so a frame caught mid-animation is wrong about all three
+    together; letting an attack from one frame pair with a defense from another
+    would invent a spread that no frame actually showed.
+    """
+    if not records:
+        raise ValueError("no records to vote on")
+
+    ivs = _majority([
+        (r.attack_iv, r.defense_iv, r.stamina_iv) for r in records
+        if None not in (r.attack_iv, r.defense_iv, r.stamina_iv)
+    ]) or (None, None, None)
+
+    # Confidence belongs to the spread that won, not to the best frame overall.
+    agreed = [r for r in records
+              if (r.attack_iv, r.defense_iv, r.stamina_iv) == ivs]
+    confidence = max((r.iv_confidence for r in agreed
+                      if r.iv_confidence is not None), default=None)
+
+    winner = ScannedPokemon(
+        name=_majority([r.name for r in records]),
+        cp=_majority([r.cp for r in records]),
+        current_hp=_majority([r.current_hp for r in records]),
+        total_hp=_majority([r.total_hp for r in records]),
+        attack_iv=ivs[0],
+        defense_iv=ivs[1],
+        stamina_iv=ivs[2],
+        iv_confidence=confidence,
+        is_shadow=_majority([r.is_shadow for r in records]) or False,
+        is_lucky=_majority([r.is_lucky for r in records]) or False,
+        is_purified=_majority([r.is_purified for r in records]) or False,
+        date_caught=_majority([r.date_caught for r in records]),
+        source_frame=records[0].source_frame,
+    )
+    # Only warn about what survived the vote. A warning from a single bad frame
+    # describes a reading that was outvoted and is no longer being reported.
+    if winner.name is None:
+        winner.warnings.append("no species name agreed across frames")
+    if winner.cp is None:
+        winner.warnings.append("no CP agreed across frames")
+    if ivs == (None, None, None):
+        winner.warnings.append("no IV spread agreed across frames")
+    return winner
 
 
 def main() -> int:
@@ -390,6 +486,9 @@ def main() -> int:
     ap.add_argument("--calibrate", action="store_true",
                     help="dump bar crops from the first frame and exit")
     ap.add_argument("--no-ivs", action="store_true", help="skip appraisal bar reading")
+    ap.add_argument("--one-frame-each", action="store_true",
+                    help="keep one frame per screen instead of voting across "
+                         "all of them; faster, and much less robust")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -409,7 +508,9 @@ def main() -> int:
         if not sources:
             raise SystemExit(f"no images found in {args.images}")
     else:
-        sources = list(iter_video_frames(args.video, args.every_n, args.work_dir))
+        # Keep the repeats. They are the frames the vote is taken over.
+        sources = list(iter_video_frames(args.video, args.every_n, args.work_dir,
+                                         keep_similar=not args.one_frame_each))
         if not sources:
             raise SystemExit("no frames extracted")
 
@@ -419,28 +520,42 @@ def main() -> int:
 
     known_names = load_known_names(args.names)
 
-    records: list[ScannedPokemon] = []
-    for label, path in sources:
-        try:
-            text = read_text(path, args.engine)
-        except Exception as exc:
-            log.warning("OCR failed on %s: %s", label, exc)
-            continue
+    # A video is a swipe-through, so consecutive look-alike frames are one
+    # Pokemon and get voted on. A directory of screenshots is one shot per
+    # Pokemon already, and grouping those by appearance would merge two
+    # genuinely different Pokemon that happen to look alike -- so each stands
+    # alone.
+    groups = ([[s] for s in sources] if args.images
+              else group_consecutive(sources))
+    log.info("%d frames -> %d Pokemon", len(sources), len(groups))
 
-        fills = None
-        if not args.no_ivs:
+    unique: list[ScannedPokemon] = []
+    for group in groups:
+        seen: list[ScannedPokemon] = []
+        for label, path in group:
             try:
-                fills = read_bar_fills(path, layout)
+                text = read_text(path, args.engine)
             except Exception as exc:
-                log.debug("bar read failed on %s: %s", label, exc)
+                log.warning("OCR failed on %s: %s", label, exc)
+                continue
 
-        rec = build_record(text, known_names, fills, source_frame=label)
+            fills = None
+            if not args.no_ivs:
+                try:
+                    fills = read_bar_fills(path, layout)
+                except Exception as exc:
+                    log.debug("bar read failed on %s: %s", label, exc)
+
+            seen.append(build_record(text, known_names, fills, source_frame=label))
+
+        if not seen:
+            continue
+        rec = vote_records(seen)
         if rec.is_usable:
-            records.append(rec)
+            unique.append(rec)
         else:
-            log.debug("discarded %s: %s", label, "; ".join(rec.warnings))
+            log.debug("discarded %s: %s", rec.source_frame, "; ".join(rec.warnings))
 
-    unique = dedupe(records)
     if not unique:
         raise SystemExit("nothing usable extracted -- try --calibrate, or --engine vision")
 

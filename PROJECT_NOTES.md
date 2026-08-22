@@ -7,8 +7,8 @@ exists for the things that are expensive to reconstruct from code alone.
 
 ## Where each piece stands
 
-356 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
-**no skips**. 348 need nothing beyond `requirements-dev.txt`; the other 8 are
+362 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 353 need nothing beyond `requirements-dev.txt`; the other 9 are
 the image path, needing OpenCV, Pillow and the tesseract binary, all of which
 CI installs. A test that skips itself is not a test that passed, and the
 summary line does not distinguish them — so the extras are installed rather
@@ -17,11 +17,11 @@ than allowed to quietly disable coverage.
 | Component | State | Verified how |
 |---|---|---|
 | Optimizer | Done | 137 tests; beats greedy at 6 of 7 budgets, ties at the 7th |
-| Image path | Done | 8 tests, synthetic screenshots painted like the real UI |
+| Image path | Done | 9 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
 | Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (75 tests) |
 | Level solver | Done | 37 tests; round-trips across levels and IV spreads |
-| Frame voting | Done | Survives corrupted frames in synthetic runs |
+| Frame voting | Done, **now actually used** | The video path kept 1 frame per Pokemon and never voted |
 | SQLite schema | Done, **not wired** | 23 tests: scoping, cascades, constraints |
 | Parsing layer | Done | 24 tests, no images or API keys needed |
 | Reference data | Done | 1,486 species / 384 moves from GAME_MASTER |
@@ -32,8 +32,8 @@ than allowed to quietly disable coverage.
 | CP from a screenshot | Checked, not trusted | OCR proposes; only a CP the IVs and HP can reproduce is kept |
 | Species from a screenshot | Checked, not trusted | 15/18 on real frames, 0 wrong; numbers narrow 1,486, text chooses within |
 | Resource row | Located, not assumed | Found by its own labels; reads exactly at 8 of 8 screen positions |
-| Grid tile geometry | **Not built** | Needs a real grid screenshot |
-| Scroll tracking | **Not built** | Needs a real swipe video |
+| Swipe segmentation | Done | Grouped in time, so duplicates survive; 8/8 and 11/11 on real frames |
+| Grid tile geometry | Not needed | Superseded by swiping through detail screens |
 
 ---
 
@@ -78,8 +78,9 @@ to *spend on*, which is a question about improvement per unit cost.
 
 ## Is the OCR done?
 
-Reading **one** Pokémon: yes, and measured. Reading a **collection**: no, and the
-missing pieces are the ones that would let this replace Poke Genie.
+Reading **one** Pokémon: yes, and measured. Reading a **collection** from a
+swipe-through: yes as of the segmentation work below, and measured on the frames
+available — but not yet run against a full-length capture of a real box.
 
 Measured over all 19 real frames available (two captures, 18 with an identifiable
 subject), scoring the name against the "This X was caught on …" line — a
@@ -103,19 +104,48 @@ path, so nothing in the repo touched the broken branch. It took running the
 accurate path against real frames — which nobody had done — to find that the
 accurate path did not run at all.
 
-What is *not* built, and what it costs:
+### Reading a collection
 
-| Piece | State | Consequence |
-|---|---|---|
-| Per-Pokémon read (bars, CP, species, level) | Done, measured | Works on a paused screen |
-| Resource row (candy) | Done, measured | One pause per family |
-| Grid tile geometry | **Not built** | Cannot enumerate a collection from the grid |
-| Scroll tracking | **Not built** | Cannot tell one Pokémon's frames from the next's |
+The intended capture is a **swipe-through of detail screens with appraise open**,
+not a grid scan. That choice removes grid tile geometry from the problem
+entirely, and it is the better trade: the grid shows a sprite and a CP, while
+the detail screen shows everything the solver needs.
 
-Without the last two, a 1,500-Pokémon collection needs 1,500 manual pauses —
-which is the same manual work Poke Genie asks for, so the OCR does not yet
-remove the dependency it was meant to remove. Both are blocked on capture data
-rather than on design: a real grid screenshot, and a real swipe video.
+Two things were wrong for that workflow, and both were silent.
+
+**`dedupe()` collapsed genuine duplicates.** It keyed on `(name, cp)`, which
+cannot tell three Machamps at CP 2451 apart from three readings of one Machamp.
+Two of the three were dropped with nothing logged. A box of 1,500 is mostly
+duplicates, so this was not an edge case — it was the common case.
+
+**The video path never voted.** `iter_video_frames()` discarded frames that
+looked like the previous one, leaving exactly one frame per Pokémon, and one
+frame cannot be voted on. That quietly contradicted the design note above: the
+~90 frames per Pokémon are the entire basis of the robustness claim, and they
+were being thrown away before anything could use them.
+
+Frames are grouped in **time** now — consecutive look-alike frames are one
+Pokémon, a jump is the swipe — and every field is voted independently across the
+group. Grouping in time is what saves the duplicates: two Machamps are two runs
+regardless of reading identically. Measured on the real frames, 8/8 and 11/11
+distinct Pokémon separated correctly, one group for 40 copies of one screen, and
+two groups of 20 for a swipe in the middle.
+
+IVs are voted as a **triple**, never per stat. Three bars are read off one image,
+so a frame caught mid-animation is wrong about all three together; pairing an
+attack from one frame with a defense from another would invent a spread that no
+frame ever showed.
+
+| Piece | State |
+|---|---|
+| Per-Pokémon read (bars, CP, species, level) | Done, measured |
+| Resource row (candy) | Done, measured |
+| Swipe segmentation and voting | Done, measured |
+| Grid tile geometry | Not needed — superseded by the swipe-through |
+
+What remains is not code: a swipe-through of a real box, long enough to hold on
+each Pokémon, to confirm the grouping thresholds on a genuine capture rather than
+on frames sampled every 60.
 
 ---
 

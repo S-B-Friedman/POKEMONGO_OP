@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pogo_opt.ingest import (
     BarLayout,
+    ScannedPokemon,
     build_record,
     extract_fields,
     iv_confidence,
@@ -198,3 +199,79 @@ def test_to_row_is_csv_safe():
     row = rec.to_row()
     assert isinstance(row["warnings"], str)
     assert all(not isinstance(v, (list, dict)) for v in row.values())
+
+
+# --------------------------------------------------------------------------
+# Voting across the frames that show one Pokemon.
+#
+# These import from ocr_ingest, which needs no image libraries for the voting
+# itself -- only group_consecutive touches OpenCV, and that is covered in
+# test_ocr_pipeline.py where the extras are guaranteed.
+
+from ocr_ingest import vote_records  # noqa: E402
+
+
+def _rec(**kw):
+    return ScannedPokemon(**kw)
+
+
+def test_duplicates_are_not_collapsed():
+    """The bug this replaced: three Machamps at one CP became one Machamp.
+
+    Identity-based collapsing keyed on (name, cp) and could not tell three
+    Pokemon apart from three readings of one. A box of 1,500 is full of exactly
+    that, and two of the three vanished with nothing logged. Frames are grouped
+    in time now, so each swipe is its own Pokemon and votes on its own.
+    """
+    spreads = [(15, 10, 7), (2, 3, 4), (11, 12, 13)]
+    voted = [
+        vote_records([_rec(name="Machamp", cp=2451, attack_iv=a,
+                           defense_iv=d, stamina_iv=s)])
+        for a, d, s in spreads
+    ]
+    assert [(v.attack_iv, v.defense_iv, v.stamina_iv) for v in voted] == spreads
+
+
+def test_a_single_bad_frame_is_outvoted():
+    """Three good frames and one mangled one. The old code kept whichever
+    record carried the fewest warnings, which a confident misread also has."""
+    good = dict(name="Pikachu", cp=292, attack_iv=15, defense_iv=14, stamina_iv=14)
+    voted = vote_records([
+        _rec(**good),
+        _rec(**good),
+        _rec(name="Pikachu", cp=992, attack_iv=1, defense_iv=1, stamina_iv=1),
+        _rec(**good),
+    ])
+    assert voted.cp == 292
+    assert (voted.attack_iv, voted.defense_iv, voted.stamina_iv) == (15, 14, 14)
+
+
+def test_fields_are_voted_independently():
+    """OCR does not fail on a whole frame at once. A name read on only one
+    frame still beats silence, and it should not drag that frame's CP along."""
+    voted = vote_records([
+        _rec(name=None, cp=313),
+        _rec(name="Anorith", cp=313),
+        _rec(name=None, cp=313),
+    ])
+    assert voted.name == "Anorith"
+    assert voted.cp == 313
+
+
+def test_ivs_are_voted_as_one_spread():
+    """Never per stat. The three bars are read off one image, so a frame caught
+    mid-animation is wrong about all three together -- pairing an attack from
+    one frame with a defense from another invents a spread nothing showed."""
+    voted = vote_records([
+        _rec(name="X", cp=1, attack_iv=15, defense_iv=0, stamina_iv=0),
+        _rec(name="X", cp=1, attack_iv=15, defense_iv=0, stamina_iv=0),
+        _rec(name="X", cp=1, attack_iv=0, defense_iv=15, stamina_iv=0),
+    ])
+    assert (voted.attack_iv, voted.defense_iv, voted.stamina_iv) == (15, 0, 0)
+
+
+def test_nothing_agreed_is_said_out_loud():
+    voted = vote_records([_rec(name=None, cp=None), _rec(name=None, cp=None)])
+    assert not voted.is_usable
+    assert any("no species name agreed" in w for w in voted.warnings)
+    assert any("no CP agreed" in w for w in voted.warnings)
