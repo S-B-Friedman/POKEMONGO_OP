@@ -7,8 +7,8 @@ exists for the things that are expensive to reconstruct from code alone.
 
 ## Where each piece stands
 
-347 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
-**no skips**. 343 need nothing beyond `requirements-dev.txt`; the other 4 are
+349 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 345 need nothing beyond `requirements-dev.txt`; the other 4 are
 the image path, needing OpenCV, Pillow and the tesseract binary, all of which
 CI installs. A test that skips itself is not a test that passed, and the
 summary line does not distinguish them — so the extras are installed rather
@@ -27,7 +27,7 @@ than allowed to quietly disable coverage.
 | Reference data | Done | 1,486 species / 384 moves from GAME_MASTER |
 | Sample data | Generated | From `reference.json`; `--check` gates CI |
 | Poke Genie import | Done | Round-trips level ranges against recomputed CP |
-| HTTP API | Done, in-memory | 6 tests; candy endpoints were untested and broken |
+| HTTP API | Done, in-memory | 8 tests; every candy path was untested and broken |
 | Appraisal bars | Calibrated | 23 tests; real capture, IVs reproduce CP **and** HP |
 | CP from a screenshot | Checked, not trusted | OCR proposes; only a CP the IVs and HP can reproduce is kept |
 | Species name from a screenshot | **Weak** | No arithmetic to check it against; misreads survive |
@@ -151,6 +151,18 @@ to *spend on*, which is a question about improvement per unit cost.
     `build_and_solve` refuses that deliberately — "candy inventory gives two
     different counts for the Squirtle family (190 and 0)". Every PUT against a
     loaded inventory hit it, so the endpoint could not be used at all.
+  - `POST /solve` returned a 500 for any collection with an unrecorded candy
+    stock, which is the **default** state after a Poke Genie import — those
+    exports carry no candy at all. `unbacked_candy` is keyed by pool, so its
+    real keys are family names, while both `Result` and the response model
+    declared `dict[int, ...]`; pydantic rejected `'Squirtle'` as an integer.
+    The field added to *warn* about missing candy was what made the endpoint
+    *fail* on missing candy. This is the worst of the three: the other two
+    degrade a UI, this one blocks the primary endpoint on the primary path.
+
+  While fixing it, `candy_warning()` stopped saying "species Dratini needs 28".
+  The key names a pile, and calling it a species sends someone looking for a
+  Dratini they may not own — the Dragonite they do own is what draws on it.
 
   Both go through `candy_pool_key` now, and `GET /candy` reports the `family`
   so a caller can see that two rows share one pile rather than reading the

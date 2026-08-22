@@ -117,7 +117,14 @@ class SolveResponse(BaseModel):
     # supplied. The plan is then optimal against stardust alone and may not
     # be affordable -- a UI should say so rather than present it as a plan.
     fully_costed: bool
-    unbacked_candy: dict[int, list[int]]
+    # Keyed by candy pool -- an evolution family name, or a species_id rendered
+    # as a string where no family is known. JSON object keys are strings either
+    # way. Declared dict[int, ...] before, which made /solve raise a 500 for any
+    # collection with an unrecorded candy stock: pydantic rejected 'Squirtle' as
+    # an integer. That is the DEFAULT state after a Poke Genie import, since
+    # those exports carry no candy at all -- so the field added to warn about
+    # missing candy was what made the endpoint fail on missing candy.
+    unbacked_candy: dict[str, list[int]]
     candy_warning: str | None = None
 
 
@@ -247,7 +254,8 @@ def solve(req: SolveRequest) -> SolveResponse:
         xl_used=xl_used,
         binding=_binding(result.shadow_prices),
         fully_costed=result.fully_costed,
-        unbacked_candy={k: list(v) for k, v in result.unbacked_candy.items()},
+        unbacked_candy={str(k): list(v)
+                        for k, v in result.unbacked_candy.items()},
         candy_warning=result.candy_warning(),
     )
 

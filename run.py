@@ -156,7 +156,7 @@ def main(argv=None) -> int:
     warning = result.candy_warning()
     if warning:
         print(f"\nWARNING: {warning}.")
-        print("         Pass --candy with your per-species counts to constrain it.")
+        print("         Pass --candy with your candy counts to constrain it.")
     return 0
 
 

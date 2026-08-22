@@ -108,6 +108,40 @@ def test_put_candy_writes_one_entry_per_family(loaded):
     assert result["families_with_candy"] == families
 
 
+def test_solve_survives_a_collection_with_no_candy_recorded(loaded):
+    """Regression: /solve returned a 500 whenever any stock was unrecorded.
+
+    `unbacked_candy` is keyed by candy pool -- 'Squirtle', a family name -- while
+    the response model declared `dict[int, list[int]]`, so pydantic rejected the
+    real keys. That is the DEFAULT state after a Poke Genie import, since those
+    exports carry no candy at all. The field added to warn about missing candy
+    was what made the endpoint fail on missing candy.
+    """
+    api.STATE["candy"] = {}
+    api.STATE["xl_candy"] = {}
+
+    result = api.solve(SolveRequest(stardust=300_000))
+
+    assert result.fully_costed is False
+    assert result.unbacked_candy
+    assert result.candy_warning
+
+
+def test_unbacked_candy_is_reported_by_family(loaded):
+    """The key names the pile, and the warning has to say so. "species Dratini"
+    sends someone looking for a Dratini they may well not own -- the Dragonite
+    they do own is what draws on it."""
+    api.STATE["candy"] = {}
+    api.STATE["xl_candy"] = {}
+
+    result = api.solve(SolveRequest(stardust=300_000))
+
+    assert all(isinstance(k, str) for k in result.unbacked_candy)
+    assert BLASTOISE_FAMILY in result.unbacked_candy
+    assert "family" in result.candy_warning
+    assert "species Squirtle" not in result.candy_warning
+
+
 def test_put_candy_moves_the_whole_family(loaded):
     """Setting stock for one species sets it for its evolutions too, because
     they draw on one pile. Reporting otherwise would invite double-spending."""
