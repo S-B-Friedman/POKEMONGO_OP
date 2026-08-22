@@ -7,8 +7,8 @@ exists for the things that are expensive to reconstruct from code alone.
 
 ## Where each piece stands
 
-341 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
-**no skips**. 337 need nothing beyond `requirements-dev.txt`; the other 4 are
+347 tests, run on 3.11 and 3.12 by CI on every push and pull request, with
+**no skips**. 343 need nothing beyond `requirements-dev.txt`; the other 4 are
 the image path, needing OpenCV, Pillow and the tesseract binary, all of which
 CI installs. A test that skips itself is not a test that passed, and the
 summary line does not distinguish them — so the extras are installed rather
@@ -20,7 +20,7 @@ than allowed to quietly disable coverage.
 | Image path | Done | 4 tests, synthetic screenshots painted like the real UI |
 | Game mechanics | Done | `combat_power()` reproduces 5 published CPs exactly |
 | Cost tables | Done | Diffed against GAME_MASTER across all 49 levels (75 tests) |
-| Level solver | Done | 31 tests; round-trips across levels and IV spreads |
+| Level solver | Done | 37 tests; round-trips across levels and IV spreads |
 | Frame voting | Done | Survives corrupted frames in synthetic runs |
 | SQLite schema | Done, **not wired** | 23 tests: scoping, cascades, constraints |
 | Parsing layer | Done | 24 tests, no images or API keys needed |
@@ -30,7 +30,7 @@ than allowed to quietly disable coverage.
 | HTTP API | Done, in-memory | Swap `STATE` for `db.py` next |
 | Appraisal bars | Calibrated | 23 tests; real capture, IVs reproduce CP **and** HP |
 | CP from a screenshot | Checked, not trusted | OCR proposes; only a CP the IVs and HP can reproduce is kept |
-| Species name from a screenshot | **Weak** | No arithmetic to check it against; misreads survive |
+| Species from a screenshot | Checked, not trusted | Numbers narrow 1,486 to a handful; text only chooses within it |
 | Grid tile geometry | **Not built** | Needs a real grid screenshot |
 | Scroll tracking | **Not built** | Needs a real swipe video |
 
