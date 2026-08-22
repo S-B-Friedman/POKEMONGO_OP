@@ -211,7 +211,11 @@ class Result:
     stardust_used: int
     stardust_budget: int
     shadow_prices: dict[str, float] | None = None
-    unbacked_candy: dict[int, tuple[int, int]] = field(default_factory=dict)
+    # Keyed by candy POOL -- the evolution family name where one is known, and
+    # the species_id where it is not. Declaring it dict[int, ...] was wrong from
+    # the moment candy moved to family keys, and the API believed the annotation
+    # and crashed on the real keys.
+    unbacked_candy: dict[str | int, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def feasible(self) -> bool:
@@ -231,14 +235,18 @@ class Result:
         """One line naming what the plan assumes it can afford, or None."""
         if not self.unbacked_candy:
             return None
-        worst = sorted(self.unbacked_candy.items(), key=lambda kv: -sum(kv[1]))
+        worst = sorted(self.unbacked_candy.items(),
+                       key=lambda kv: (-sum(kv[1]), str(kv[0])))
+        # "the Dratini family", not "species Dratini". The key names the pool a
+        # Dragonite draws from, and calling that a species invites someone to go
+        # looking for a Dratini they may not own.
         shown = ", ".join(
-            f"species {sid} needs {c}" + (f" + {x} XL" if x else "")
-            for sid, (c, x) in worst[:4]
+            f"the {pool} family needs {c}" + (f" + {x} XL" if x else "")
+            for pool, (c, x) in worst[:4]
         )
         more = f", and {len(worst) - 4} more" if len(worst) > 4 else ""
         return (
-            f"plan spends candy for {len(worst)} species with no known stock "
+            f"plan spends candy from {len(worst)} families with no known stock "
             f"({shown}{more}) -- those constraints did not bind, so the plan "
             f"may not be affordable"
         )
