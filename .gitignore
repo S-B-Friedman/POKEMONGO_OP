@@ -22,6 +22,17 @@ env/
 screenshots/
 exports/
 
+# Frames extracted from a video. ocr_ingest.py writes these to --work-dir, which
+# defaults here, and a 50-second capture is ~300 PNGs. 111MB of them reached
+# main once already, swept in by `git add -A` under a commit about name
+# matching; they are regenerable from the video in seconds and belong nowhere
+# near the history.
+.ocr_frames/
+*.mp4
+*.MP4
+scanned*.csv
+candy_*.csv
+
 # Editor / OS
 .vscode/
 .idea/

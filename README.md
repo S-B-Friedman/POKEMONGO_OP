@@ -289,15 +289,25 @@ is the only route to the second resource the solver constrains.
 
 **Record the plain detail screen, with no appraisal open.** The row is found by
 searching for its own labels rather than at a fixed height, so it does not
-matter where on the screen it lands or what shape the phone is. It does matter
-that the labels are legible: the appraisal overlay dims them past recovery while
-leaving the numbers readable, and a number whose column cannot be identified is
-not worth having. Measured over one such capture, 18 of 19 frames yielded
-nothing for that reason.
+matter where on the screen it lands or what shape the phone is.
 
-One detail screen shows one species, so a collection needs one pause per
-species — not per Pokémon. Candy is pooled by evolution family, so a hundred
-Swinub, Piloswine and Mamoswine share a single count.
+The appraisal screen cannot substitute, and not for the reason first supposed.
+Its labels are perfectly legible — the trouble is the candy **icon**, which sits
+immediately left of the digits and is read as one of them: `MARILL CANDY 1,211`
+came back as `41,211`, correctly grouped in thousands and 34 times the truth. On
+the plain card the icon is orange against dark teal and is removed by hue, which
+is why a row reads `521,865 / 1,645 / 293` exactly. `--candy-from-overlay` opts
+into the unreliable reader and warns.
+
+One detail screen shows one family, so a collection needs one pause per
+family — not per Pokémon. Candy is pooled by evolution family, so a hundred
+Swinub, Piloswine and Mamoswine share a single count. And you rarely need them
+all: solve first, and `Result.candy_warning()` names the handful of families the
+plan actually reaches for.
+
+**[docs/capture.md](docs/capture.md)** has the full procedure — filtering the box
+before you record, both passes, and an AssistiveTouch recipe for swiping
+hands-free.
 
 ## Reference data
 
