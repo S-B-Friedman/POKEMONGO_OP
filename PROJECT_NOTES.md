@@ -369,6 +369,28 @@ on frames sampled every 60.
     x 0.14–0.29) and the team leader (H≈100, x 0.33–0.91) saturate the entire
     row, and the icons are not separable from either.
 
+  **Reopened, then closed again on better evidence.** Swiping moves the card
+  while the badge and the leader stay put, so every column does cross clear
+  space, and reading it there works: Gible 472, Bagon 968, Dratini 192 off one
+  capture and Tauros 619 off a second, all correct.
+
+  It is still off by default (`--candy-from-overlay`). The candy icon sits
+  immediately left of the digits and is read as one of them: `MARILL CANDY
+  1,211` came back as **41,211** — correctly grouped in thousands, plausible as
+  a count, and 34 times the truth. Nothing downstream can catch that.
+
+  Three fixes were tried and none held. Masking by saturation fails because the
+  overlay tints everything blue, so the icon (S=168) and the digits (S=170) are
+  indistinguishable and the digits go with it. A second reading method disagrees
+  exactly where the icon is — 1,211 / 31,211 / 71,211 across scales and
+  page-segmentation modes, stable in the suffix, noise in the leading digit.
+  Majority across preprocessings picks 71,211.
+
+  The clean card never has this problem: there the icon is orange against dark
+  teal and `_text_mask` removes it by hue, which is why a Swinub row reads
+  521,865 / 1,645 / 293 exactly. **So candy wants a short pass with the
+  appraisal closed** — one pause per family, not per Pokémon.
+
   Three independent ways to find the column, all blocked by the same overlay.
   The practical consequence is a capture instruction, not a code change: **pause
   on the plain detail screen for each species**, with no appraisal open. The

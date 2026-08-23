@@ -91,6 +91,22 @@ class Reference:
                 return hit
         return self._species.get(normalize(name))
 
+    def forms(self, name: str) -> list[Species]:
+        """Every species entry sharing a display name, base form first.
+
+        A screenshot shows "Palkia" whether it is the base species or the Origin
+        Forme, and their base stats differ enough to change the arithmetic: at
+        level 49 with perfect IVs, base Palkia is CP 4458 and Origin Forme is
+        CP 4627. Verifying an observed CP against the base form alone therefore
+        rejects a perfectly good reading of the other one -- which it did, to a
+        real capture, before this existed.
+        """
+        wanted = normalize(name)
+        hits = [s for key, s in self._species.items()
+                if normalize(s.name) == wanted]
+        hits.sort(key=lambda s: (bool(s.form), s.form))
+        return hits
+
     def move(self, name: str, kind: str | None = None) -> Move | None:
         hit = self._moves.get(normalize(name))
         if hit and kind and hit.kind != kind:

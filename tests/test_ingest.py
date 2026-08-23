@@ -275,3 +275,143 @@ def test_nothing_agreed_is_said_out_loud():
     assert not voted.is_usable
     assert any("no species name agreed" in w for w in voted.warnings)
     assert any("no CP agreed" in w for w in voted.warnings)
+
+
+def test_a_standing_warning_survives_the_vote():
+    """Regression, and the worst run this project has produced.
+
+    vote_records built a fresh record and kept none of the per-frame warnings,
+    so a real 50-second capture came back as "16 records (0 flagged for review)"
+    with the IVs read off the wrong part of the screen. Every single frame had
+    said "low IV read confidence -- check bar crop region"; the consensus record
+    said nothing. A vote can settle a disagreement, but it cannot fix a
+    condition every frame agrees on, and must not hide it.
+    """
+    def warned(**kw):
+        r = ScannedPokemon(name="Palkia", cp=4627, attack_iv=15,
+                           defense_iv=15, stamina_iv=15, **kw)
+        r.warnings.append("low IV read confidence (0.497) -- check bar crop region")
+        return r
+
+    voted = vote_records([warned() for _ in range(6)])
+    assert any("check bar crop region" in w for w in voted.warnings)
+    assert not voted.is_usable or voted.warnings
+
+
+def test_a_one_off_warning_does_not_survive_the_vote():
+    """The other half: a warning from a single outvoted frame describes a
+    reading that is no longer being reported, so repeating it is noise."""
+    clean = [ScannedPokemon(name="Palkia", cp=4627, attack_iv=15,
+                            defense_iv=15, stamina_iv=15) for _ in range(5)]
+    bad = ScannedPokemon(name="Palkia", cp=None, attack_iv=15,
+                         defense_iv=15, stamina_iv=15)
+    bad.warnings.append("CP not found")
+
+    voted = vote_records(clean + [bad])
+    assert voted.cp == 4627
+    assert voted.warnings == []
+
+
+# --------------------------------------------------------------------------
+# Refereeing a voted record against the arithmetic.
+
+from ocr_ingest import verify_record  # noqa: E402
+
+
+def test_an_impossible_cp_is_removed_not_reported():
+    """From a real capture: a Dragonite at CP 7 beside a good IV spread.
+
+    cp_candidates() and verify_cp() both existed and were tested, and the scan
+    driver called neither -- the module docstring described a propose-and-verify
+    pipeline that was never wired up. Whatever the regex scraped off the text
+    went straight to the CSV.
+    """
+    rec = ScannedPokemon(name="Dragonite", cp=7, total_hp=184,
+                         attack_iv=15, defense_iv=14, stamina_iv=15)
+    verify_record(rec, [7])
+    assert rec.cp is None
+    assert any("discarded" in w for w in rec.warnings)
+
+
+def test_a_correct_cp_survives_verification():
+    rec = ScannedPokemon(name="Garchomp", cp=4365, total_hp=208,
+                         attack_iv=15, defense_iv=15, stamina_iv=11)
+    verify_record(rec, [4365])
+    assert rec.cp == 4365
+    assert rec.warnings == []
+
+
+def test_an_alternate_form_is_not_rejected_as_impossible():
+    """Regression caught before shipping, and the dangerous direction.
+
+    A screenshot says "Palkia" for both the base species and the Origin Forme.
+    At level 49 with perfect IVs those are CP 4458 and CP 4627, so checking the
+    base form alone rejects a completely correct reading of the other -- 4627
+    with HP 170, which resolves exactly. Deleting good data is worse than the
+    unchecked CP this verification exists to catch.
+    """
+    rec = ScannedPokemon(name="Palkia", cp=4627, total_hp=170,
+                         attack_iv=15, defense_iv=15, stamina_iv=15)
+    verify_record(rec, [4627])
+    assert rec.cp == 4627
+    assert rec.warnings == []
+
+
+def test_verification_declines_without_the_numbers_it_needs():
+    """No HP means no second equation, so there is nothing to check against.
+    Leaving the CP alone is right; inventing a verdict would not be."""
+    rec = ScannedPokemon(name="Dragonite", cp=7, total_hp=None,
+                         attack_iv=15, defense_iv=14, stamina_iv=15)
+    verify_record(rec, [7])
+    assert rec.cp == 7
+
+
+def test_a_nicknamed_pokemon_is_recovered_from_its_numbers():
+    """A nickname is not a species name, so the matcher declines -- and that
+    used to cost the whole record, since is_usable needs a name.
+
+    Dragonite at 15/14/15, level 38: CP 3675 with HP 174 is produced by exactly
+    one species in the reference, so the name is recoverable without the text.
+    """
+    rec = ScannedPokemon(name=None, cp=None, total_hp=174,
+                         attack_iv=15, defense_iv=14, stamina_iv=15)
+    verify_record(rec, [3675])
+    assert rec.name == "Dragonite"
+    assert rec.cp == 3675
+    assert any("recovered from CP/HP" in w for w in rec.warnings)
+
+
+def test_an_ambiguous_spread_is_left_unnamed():
+    """Blaziken at 15/15/15 level 40 shares CP 2848 / HP 162 with Leavanny.
+
+    Two candidates is not an answer. Naming it anyway would be the confident
+    wrong answer the whole propose-and-verify design exists to prevent, and a
+    name is what everything downstream keys on.
+    """
+    rec = ScannedPokemon(name=None, cp=None, total_hp=162,
+                         attack_iv=15, defense_iv=15, stamina_iv=15)
+    verify_record(rec, [2848])
+    assert rec.name is None
+    assert any("consistent with CP/HP" in w for w in rec.warnings)
+    # The alternatives are named so a human can settle it.
+    assert any("Blaziken" in w for w in rec.warnings)
+
+
+# --------------------------------------------------------------------------
+# The plan's state markers.
+
+def test_state_markers_render_for_a_set_of_states():
+    """Regression: no marker had rendered since friendship became a frozenset.
+
+    run.py looked the SET up in a dict keyed by strings, so .get() returned the
+    default every time. The README's own example output showed MetagrossL and
+    TyranitarS, which the code could no longer produce.
+    """
+    from run import state_marker
+
+    assert state_marker(frozenset({"lucky"})) == "L"
+    assert state_marker(frozenset({"shadow"})) == "S"
+    assert state_marker(frozenset({"normal"})) == ""
+    # The case the frozenset exists for, and the one the old lookup could never
+    # show: both discounts apply, so both must be visible.
+    assert state_marker(frozenset({"lucky", "purified"})) == "LP"

@@ -34,6 +34,7 @@ from pogo_opt.ingest import (
     bar_reading,
     contiguous_runs,
     find_bar_cluster,
+    iv_confidence,
     iv_from_bar_fill,
 )
 
@@ -103,8 +104,12 @@ def test_gaps_are_not_counted_as_unfilled():
     assert r.ratio == pytest.approx(1.0)
     assert iv_from_bar_fill(r.ratio) == 15
 
+    # Measure the naive reading from the painted pixels, not from r.filled_px.
+    # The reading trims each segment's anti-aliased end caps before counting, so
+    # filled_px is deliberately smaller than what was painted -- deriving the
+    # comparison from it would be comparing the new reading against itself.
     span = SEG_WIDTH * IV_BAR_SEGMENTS + GAP * (IV_BAR_SEGMENTS - 1)
-    naive = r.filled_px / span
+    naive = sum(fill) / span
     assert naive < 1.0, "span-based reading must under-report a full bar"
     assert r.ratio - naive == pytest.approx(GAP * 2 / span, abs=1e-3)
 
@@ -388,3 +393,36 @@ def test_a_base_form_still_matches_its_own_name():
 def test_the_wrong_family_is_still_rejected():
     """Mid-swipe the previous Pokemon's label can still be on screen."""
     assert find_candy_anchor([(495, "GIBLECANDY")], "Palkia", "Palkia") is None
+
+
+def test_segment_end_caps_do_not_bias_a_full_bar_low():
+    """Regression from a real capture: a clean 15/15 bar reported confidence 0.20.
+
+    Segment ends are rounded and anti-aliased, so those pixels pass the
+    desaturated track test and fail the saturated fill test. Four pixels in a
+    hundred, at both ends of all three segments. The IV still rounded to 15, but
+    iv_confidence measures distance from a legal IV and so called a perfect
+    reading suspect -- 231 of 270 readable frames in one 50-second capture came
+    back under 0.5, the value documented as meaning the crop region is wrong. It
+    was not wrong, and none of those readings needed review.
+    """
+    fill, track = make_bar(15)
+    # Blunt both ends of every segment the way anti-aliasing does.
+    for a, b in contiguous_runs(track, min_length=10):
+        for x in (a, a + 1, b - 1, b):
+            fill[x] = False
+
+    r = bar_reading(fill, track)
+    assert iv_from_bar_fill(r.ratio) == 15
+    assert iv_confidence(r.ratio) > 0.8, (
+        f"blunted full bar read {r.ratio:.3f}, confidence "
+        f"{iv_confidence(r.ratio):.2f}"
+    )
+
+
+def test_a_partial_bar_is_still_read_correctly_after_trimming():
+    """Trimming must not eat the signal it is protecting. Every legal IV still
+    round-trips, so the correction cannot be masking a real partial fill."""
+    for iv in range(16):
+        fill, track = make_bar(iv)
+        assert iv_from_bar_fill(bar_reading(fill, track).ratio) == iv, iv

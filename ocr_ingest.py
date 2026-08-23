@@ -60,14 +60,38 @@ from pogo_opt.ingest import (
     find_candy_anchor,
     match_species_name,
     resource_number,
+    trim_segment_caps,
 )
 
 log = logging.getLogger("ocr_ingest")
 
 # Mean absolute difference, on a 64x64 greyscale thumbnail, below which two
-# frames are treated as the same screen. Used both to skip settling frames and
-# to group a swipe-through into one run per Pokemon, so the two cannot drift.
+# frames are treated as the same screen. Used when sampling to skip frames that
+# repeat one already kept.
 _SAME_SCREEN_DIFF = 4.0
+
+# Grouping a swipe-through uses the band carrying the species name and CP, not
+# the whole frame. Measured over a real 50s capture (1080x1920, 30fps, sampled
+# every 5th frame), the difference between consecutive frames is:
+#
+#     region              within a Pokemon     across a swipe
+#     name band 0.40-0.47        0.34               20+
+#     whole frame                2.39                8
+#
+# The appraisal screen animates -- the team leader moves, the sprite breathes,
+# the background shifts -- so a whole-frame comparison sees motion on every
+# frame of a Pokemon that is merely sitting there. On that capture it cut a
+# 16-Pokemon swipe into 118 groups. The name band holds still until the name
+# itself changes, which is exactly the event being looked for.
+_IDENTITY_BAND = (0.40, 0.47)
+_IDENTITY_DIFF = 5.0
+
+# Groups shorter than this are swipe frames, not Pokemon. Mid-swipe the screen
+# matches neither neighbour, so each transitional frame becomes a group of one:
+# 91 of those 118 were exactly that. At the default sampling this is about half
+# a second, well under the time anyone spends looking at a Pokemon -- but it is
+# a frame count, so raising --every-n raises the real duration with it.
+_MIN_GROUP_FRAMES = 3
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -205,6 +229,9 @@ def detect_bars(img, *, min_length: int = 20) -> dict[str, BarReading] | None:
         if trio is None:
             continue
         row_fill = fill_m[y]
+        # Same cap trim as bar_reading: the rounded, anti-aliased segment ends
+        # count as track and never as fill, which biases every reading low.
+        trio = [trim_segment_caps(a, b) for a, b in trio]
         total = sum(b - a + 1 for a, b in trio)
         filled = sum(1 for a, b in trio for x in range(a, b + 1) if row_fill[x])
         candidates.append((
@@ -287,7 +314,14 @@ def read_bar_fills(
             continue
         mid = min(h - 1, (y0 + y1) // 2)
         r = bar_reading(fill_m[mid][x0:x1].tolist(), track_m[mid][x0:x1].tolist())
-        fills[stat] = r.ratio
+        # BarReading.plausible exists for this and was not being consulted. A
+        # scanline that misses the bar has no track and no segments, so it reads
+        # 0.0 filled -- and 0.0 is a legal IV, scoring perfect confidence. Two
+        # rows of a real scan came back 0/0/0 at confidence 1.0 off screens with
+        # no appraisal open at all: a confident answer about a Pokemon that was
+        # not there. An empty bar and an absent bar are different things.
+        if r.plausible:
+            fills[stat] = r.ratio
     return fills
 
 
@@ -374,17 +408,142 @@ def iter_video_frames(video_path: Path, every_n: int, work_dir: Path,
 # Driver
 # --------------------------------------------------------------------------
 
-def group_consecutive(sources, threshold: float = _SAME_SCREEN_DIFF):
-    """Split an ordered list of (label, path) into one group per screen.
+def _name_from_numbers(rec: ScannedPokemon, candidates) -> ScannedPokemon:
+    """Recover an unread species from the CP, HP and IVs alone.
 
-    A swipe-through holds on each Pokemon for a second or more and then moves,
-    so "which Pokemon is this" is answered by WHEN the frame was taken, not by
-    what was read off it. Consecutive frames that look the same are the same
-    Pokemon; a jump in the image is the swipe.
+    A nickname is not a species name, so the matcher declines on them -- rightly,
+    since forcing "Sanji 100" onto the nearest species is the confident wrong
+    answer this pipeline exists to avoid. But declining used to cost the whole
+    record: is_usable needs a name, so every renamed Pokemon was dropped.
+
+    The numbers still identify it. species_consistent_with() asks which species
+    can produce a given CP and HP at some level for these IVs, and on real
+    readings that cuts 1,486 to a handful. A name is taken only when exactly one
+    survives across every CP candidate; anything ambiguous is left unnamed, which
+    is the state the record was already in. Recovering the wrong name would be
+    worse than recovering none, because a name is what everything downstream
+    keys on.
+    """
+    try:
+        from pogo_opt.reference import default_reference
+        from pogo_opt.resolve import species_consistent_with
+
+        pool = list(default_reference()._species.values())
+    except Exception:
+        return rec
+
+    # (species, cp) pairs the arithmetic allows. The CP comes along for free:
+    # whichever candidate produced the match is a CP that verifies by
+    # construction, so an unnamed record can gain both fields at once.
+    allowed: set[tuple[str, int]] = set()
+    for cp in dict.fromkeys(c for c in candidates if c):
+        for name, _level in species_consistent_with(
+            pool, rec.attack_iv, rec.defense_iv, rec.stamina_iv,
+            cp, rec.total_hp,
+        ):
+            allowed.add((name, cp))
+
+    names = {name for name, _ in allowed}
+    if len(names) != 1:
+        if names:
+            rec.warnings.append(
+                f"species not named: {len(names)} consistent with CP/HP "
+                f"({', '.join(sorted(names)[:4])})"
+            )
+        return rec
+
+    rec.name = next(iter(names))
+    cps = {cp for _, cp in allowed}
+    if len(cps) == 1:
+        rec.cp = next(iter(cps))
+    rec.warnings.append(f"species {rec.name} recovered from CP/HP, not from text")
+    return rec
+
+
+def verify_record(rec: ScannedPokemon, candidates) -> ScannedPokemon:
+    """Referee a voted record against the arithmetic, in place.
+
+    The module docstring has claimed since the CP work landed that
+    cp_candidates() proposes and resolve.verify_cp() disposes. It did not: both
+    exist, both are tested, and nothing in the scan driver ever called either.
+    So the CP written to the CSV was whatever the regex scraped off the text,
+    unchecked -- which is how a real capture produced a Dragonite at CP 7 and a
+    Sceptile at CP 27, each sitting beside a perfectly good IV spread.
+
+    Nothing here invents a value. A CP that no level can reproduce alongside the
+    observed HP is removed and said out loud, because no CP is worth more than a
+    wrong one.
+    """
+    if rec.total_hp is None:
+        return rec
+    if None in (rec.attack_iv, rec.defense_iv, rec.stamina_iv):
+        return rec
+    if not rec.name:
+        return _name_from_numbers(rec, candidates)
+
+    try:
+        from pogo_opt.reference import default_reference
+        from pogo_opt.resolve import verify_cp
+
+        forms = default_reference().forms(rec.name)
+    except Exception:
+        return rec
+    if not forms:
+        return rec
+
+    proposed = list(dict.fromkeys(
+        [c for c in candidates if c] + ([rec.cp] if rec.cp else [])
+    ))
+    if not proposed:
+        return rec
+
+    # Every form of the name, not just the base one. A screenshot says "Palkia"
+    # for both the base species and the Origin Forme, and at level 49 with
+    # perfect IVs those are CP 4458 and CP 4627. Checking the base form alone
+    # threw away a completely correct reading of the Origin Forme -- 4627 with
+    # HP 170, which resolves exactly.
+    verdict = None
+    for species in forms:
+        verdict = verify_cp(
+            species.base_attack, species.base_defense, species.base_stamina,
+            rec.attack_iv, rec.defense_iv, rec.stamina_iv,
+            proposed, rec.total_hp,
+        )
+        if verdict is not None:
+            break
+    if verdict is None:
+        if rec.cp is not None:
+            rec.warnings.append(
+                f"CP {rec.cp} discarded: no level reproduces it with HP "
+                f"{rec.total_hp} for {rec.name} at {rec.attack_iv}/"
+                f"{rec.defense_iv}/{rec.stamina_iv}"
+            )
+        rec.cp = None
+        return rec
+
+    if rec.cp != verdict.cp:
+        rec.warnings.append(f"CP corrected {rec.cp} -> {verdict.cp} by level solve")
+    rec.cp = verdict.cp
+    return rec
+
+
+def group_consecutive(sources, threshold: float = _IDENTITY_DIFF,
+                      min_frames: int = _MIN_GROUP_FRAMES):
+    """Split an ordered list of (label, path) into one group per Pokemon.
+
+    A swipe-through holds on each Pokemon and then moves, so "which Pokemon is
+    this" is answered by WHEN the frame was taken, not by what was read off it.
+    Consecutive frames whose identity band matches are the same Pokemon; a jump
+    is the swipe.
 
     Grouping in time is what makes duplicates survive. Identity-based collapsing
     cannot tell three Machamps at CP 2451 apart from three readings of one
     Machamp -- and a box of 1,500 is full of exactly that.
+
+    Groups shorter than `min_frames` are dropped as mid-swipe frames. Mid-swipe
+    the screen matches neither neighbour, so every transitional frame becomes a
+    group of one and would otherwise be reported as a Pokemon that was never on
+    screen long enough to read.
     """
     _require("cv2", "opencv-python-headless")
     import cv2
@@ -393,11 +552,12 @@ def group_consecutive(sources, threshold: float = _SAME_SCREEN_DIFF):
     groups: list[list] = []
     previous = None
     for item in sources:
-        path = item[1]
-        img = cv2.imread(str(path))
+        img = cv2.imread(str(item[1]))
         if img is None:
             continue
-        small = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (64, 64))
+        h = img.shape[0]
+        band = img[int(h * _IDENTITY_BAND[0]):int(h * _IDENTITY_BAND[1]), :]
+        small = cv2.resize(cv2.cvtColor(band, cv2.COLOR_BGR2GRAY), (64, 16))
         moved = previous is None or float(
             np.mean(np.abs(small.astype(int) - previous.astype(int)))
         ) >= threshold
@@ -405,7 +565,12 @@ def group_consecutive(sources, threshold: float = _SAME_SCREEN_DIFF):
             groups.append([])
         groups[-1].append(item)
         previous = small
-    return groups
+
+    kept = [g for g in groups if len(g) >= min_frames]
+    if len(groups) != len(kept):
+        log.info("%d runs, %d dropped as mid-swipe (under %d frames)",
+                 len(groups), len(groups) - len(kept), min_frames)
+    return kept
 
 
 def _majority(values):
@@ -459,8 +624,22 @@ def vote_records(records: list[ScannedPokemon]) -> ScannedPokemon:
         date_caught=_majority([r.date_caught for r in records]),
         source_frame=records[0].source_frame,
     )
-    # Only warn about what survived the vote. A warning from a single bad frame
-    # describes a reading that was outvoted and is no longer being reported.
+    # Carry forward any warning that most frames raised. A warning seen once
+    # describes a reading that was outvoted and is no longer being reported; a
+    # warning seen on nearly every frame describes a standing condition -- a
+    # miscalibrated crop region, say -- which the vote cannot fix and must not
+    # hide.
+    #
+    # Dropping them all, which this did, produced the worst run of the project:
+    # a real 50-second capture came back as "16 records (0 flagged for review)"
+    # with the IVs read off the wrong part of the screen. Every frame had said
+    # "low IV read confidence -- check bar crop region" and the consensus record
+    # said nothing at all.
+    seen = Counter(w for r in records for w in r.warnings)
+    for warning, count in seen.items():
+        if count * 2 >= len(records):
+            winner.warnings.append(warning)
+
     if winner.name is None:
         winner.warnings.append("no species name agreed across frames")
     if winner.cp is None:
@@ -470,7 +649,10 @@ def vote_records(records: list[ScannedPokemon]) -> ScannedPokemon:
     return winner
 
 
-def main() -> int:
+def parse_args(argv=None):
+    """Build the CLI parser. Separate from main() so it can be tested --
+    a flag whose default matters is worth pinning, and --candy-from-overlay
+    defaulting to on would feed the solver numbers known to be wrong."""
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -486,11 +668,29 @@ def main() -> int:
     ap.add_argument("--calibrate", action="store_true",
                     help="dump bar crops from the first frame and exit")
     ap.add_argument("--no-ivs", action="store_true", help="skip appraisal bar reading")
+    ap.add_argument("--candy-out", type=Path,
+                    help="also write a per-family candy CSV from the detail "
+                         "screens' resource row. Needs the appraisal CLOSED: "
+                         "the overlay's rating badge and team leader sit on top "
+                         "of that row")
+    ap.add_argument("--candy-from-overlay", action="store_true",
+                    help="also read candy off appraisal frames. OFF by default: "
+                         "the candy icon abuts the digits there and is read as "
+                         "one, so 1,211 came back as 41,211 -- correctly grouped "
+                         "and 34x too high. Use a pass with the appraisal CLOSED "
+                         "instead, where the icon is removed by hue")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="skip checking the CP against the IVs and HP; faster, "
+                         "and lets an unverifiable CP through")
     ap.add_argument("--one-frame-each", action="store_true",
                     help="keep one frame per screen instead of voting across "
                          "all of them; faster, and much less robust")
     ap.add_argument("-v", "--verbose", action="store_true")
-    args = ap.parse_args()
+    return ap.parse_args(argv)
+
+
+def main() -> int:
+    args = parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -498,6 +698,9 @@ def main() -> int:
     )
 
     layout = BarLayout()
+    if not args.no_verify:
+        _require("cv2", "opencv-python-headless")
+    import cv2
 
     if args.images:
         sources = [
@@ -532,6 +735,7 @@ def main() -> int:
     unique: list[ScannedPokemon] = []
     for group in groups:
         seen: list[ScannedPokemon] = []
+        proposed: set[int] = set()
         for label, path in group:
             try:
                 text = read_text(path, args.engine)
@@ -547,14 +751,49 @@ def main() -> int:
                     log.debug("bar read failed on %s: %s", label, exc)
 
             seen.append(build_record(text, known_names, fills, source_frame=label))
+            # Collected per frame and pooled for the group: the CP band is the
+            # hardest text on the screen, and a candidate any one frame saw is
+            # worth offering to the verifier.
+            if not args.no_verify:
+                try:
+                    proposed.update(cp_candidates(cv2.imread(str(path))))
+                except Exception as exc:
+                    log.debug("CP candidates failed on %s: %s", label, exc)
 
         if not seen:
             continue
         rec = vote_records(seen)
+        if not args.no_verify:
+            rec = verify_record(rec, proposed)
         if rec.is_usable:
             unique.append(rec)
         else:
             log.debug("discarded %s: %s", rec.source_frame, "; ".join(rec.warnings))
+
+    # Candy comes off the same frames, but only where the appraisal is closed.
+    # Done here rather than in a separate pass so one capture of plain detail
+    # screens yields both the collection and the candy inventory.
+    if args.candy_out:
+        images = [cv2.imread(str(pth)) for _, pth in sources]
+        rows = scan_resource_rows(images)
+        if args.candy_from_overlay:
+            log.warning(
+                "reading candy off the appraisal overlay: values there can "
+                "carry a spurious leading digit and are not trustworthy on "
+                "their own -- check them before acting on the plan"
+            )
+            for dex, row in scan_overlay_candy(images).items():
+                rows.setdefault(dex, row)
+        written = write_candy_csv(rows, args.candy_out)
+        if written:
+            print(f"Wrote candy for {written} families to {args.candy_out}.")
+        else:
+            print(
+                f"No candy read, so {args.candy_out} is empty. Sitting still on "
+                f"the appraisal screen the candy figure is behind the team "
+                f"leader; it becomes legible mid-swipe, or on a pass with the "
+                f"appraisal closed."
+            )
 
     if not unique:
         raise SystemExit("nothing usable extracted -- try --calibrate, or --engine vision")
@@ -931,6 +1170,193 @@ def scan_resource_rows(frames, ref=None, sample_every: int = 5) -> dict[int, Res
             continue
         out[dex] = ResourceRow(species=seen[dex].species, candy=candy, xl_candy=xl)
     return out
+
+
+# The appraisal overlay covers the resource row with furniture fixed to the
+# SCREEN, not to the card: a rating badge on the left and the team leader in the
+# middle. What is legible is whatever is not behind them, and that is not one
+# window -- on a 1080x1920 capture the candy column reads to the left of the
+# leader and the XL column never emerges, while on a 1206x2622 capture the two
+# straddle him and BOTH read from the same frame.
+#
+# So the crop follows the numbers rather than a fixed gap. The label starts at
+# roughly the number's left edge and runs right; measured on both devices, a
+# span from x - 0.09w to x + 0.17w frames it and stops short of the face:
+#
+#     1080 wide: number at x=453, label legible over 356-626  (-0.090w, +0.160w)
+#     1206 wide: number at x=522, label legible over 434-724  (-0.073w, +0.167w)
+#
+# The span still has to be tight. Widen it and the badge fringe or the face comes
+# in, and tesseract returns "SE" for a label that reads "GIBLE CANDY" when
+# cropped close. That is a property of page segmentation, not of the threshold,
+# so no preprocessing rescues a crop that includes the leader.
+_LABEL_SPANS = ((-0.09, 0.17), (-0.01, 0.15), (0.02, 0.20))
+
+# Offsets from a candidate value line to the label beneath it, as fractions of
+# screen height. Searched rather than fixed: the first frame that yields a candy
+# label locks the offset in, and the rest of the capture reuses it.
+_OVERLAY_LABEL_OFFSETS = (0.016, 0.019, 0.022, 0.025)
+_OVERLAY_ROW_SEARCH = (0.60, 0.76)
+
+
+def _read_label(img, x: int, y0: int, y1: int, span, scale: int = 5,
+                psm: int = 7) -> str:
+    """OCR the label crop belonging to a number at `x`, over one span."""
+    import cv2
+    import pytesseract
+
+    h, w = img.shape[:2]
+    x0 = max(0, int(x + w * span[0]))
+    x1 = min(w, int(x + w * span[1]))
+    crop = img[max(0, y0):min(h, y1), x0:x1]
+    if crop.size == 0 or x1 <= x0:
+        return ""
+    big = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), None,
+                     fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    return pytesseract.image_to_string(big, config=f"--psm {psm}").strip()
+
+
+def _family_stem(flat: str) -> str:
+    """The family name from a label, as the PREFIX before the candy word.
+
+    Stripping a fixed list of words does not survive OCR: the trailing "CANDY"
+    comes back as "CANL" or "CANE" often enough to matter, and the leftover
+    letters drag a fuzzy match below its cutoff -- "TAUROSCANL" scores 0.75
+    against "TAUROS" and was thrown away. The layout is "<FAMILY> CANDY [XL]",
+    so the name is whatever precedes the candy word, however badly that word
+    was read.
+    """
+    index = flat.find("CAN")
+    return flat[:index] if index > 0 else flat
+
+
+def scan_overlay_candy(frames, ref=None) -> dict[int, ResourceRow]:
+    """Read per-family candy off an appraisal swipe-through.
+
+    The appraisal screen was written off as unreadable for candy, and that was
+    right about a screen sitting still: the rating badge covers the stardust
+    figure and the team leader stands over the candy one, so for a mega-capable
+    Pokemon the digits are not in the image at all. Measured over 19 frames of
+    two captures, one gave a usable row.
+
+    Swiping changes the geometry. The badge and the leader belong to the
+    overlay, so they hold still while the card slides, and every column crosses
+    the clear space on its way past. That much works: Gible 472, Bagon 968 and
+    Dratini 192 off one capture, Tauros 619 off another, all correct.
+
+    IT IS STILL OFF BY DEFAULT, because "works when it works" is not a property
+    worth shipping for a number the solver spends against. The candy icon sits
+    immediately left of the digits and is read as one of them: MARILL CANDY
+    1,211 came back as 41,211. That passes every check available -- it is
+    correctly grouped in thousands, it is a plausible count, and it is 34 times
+    the truth.
+
+    Three fixes were tried and none held. Masking by saturation fails because
+    the overlay tints everything blue, so the icon (S=168) and the digits
+    (S=170) are the same; masking removes the digits too. A second reading
+    method disagrees exactly where the icon is -- 1,211 / 31,211 / 71,211 across
+    scales and page-segmentation modes, stable in the suffix and noise in the
+    leading digit. Majority across preprocessings picks 71,211.
+
+    The clean detail card does not have this problem at all: there the icon is
+    orange against dark teal text and _text_mask removes it by hue, which is why
+    a Swinub row reads 521,865 / 1,645 / 293 exactly. So the honest advice is a
+    short pass with the appraisal CLOSED, one pause per family. This is left in
+    place, behind --candy-from-overlay, because the geometry is right and only
+    the icon is in the way.
+
+    Majority-voted per family, for the same reason every other reading here is.
+    """
+    _require("cv2", "opencv-python-headless")
+    _require("pytesseract", "pytesseract")
+
+    from pogo_opt.reference import default_reference
+
+    ref = ref or default_reference()
+    families = {}
+    for sp in ref._species.values():
+        if sp.family:
+            families.setdefault(re.sub(r"[^A-Z]", "", sp.family.upper()), sp)
+
+    import cv2
+
+    votes: dict[tuple[str, bool], Counter] = {}
+
+    for img in frames:
+        if img is None:
+            continue
+        h = img.shape[0]
+        top = int(h * _OVERLAY_ROW_SEARCH[0])
+        bottom = int(h * _OVERLAY_ROW_SEARCH[1])
+        band = cv2.cvtColor(img[top:bottom, :], cv2.COLOR_BGR2GRAY)
+
+        # Find the NUMBERS first, with one black-hat pass over the band. They
+        # survive the overlay's dimming where the labels do not, so they are the
+        # cheap way to locate the row -- searching for the row by OCR'ing every
+        # candidate height costs a few hundred passes per frame and is what made
+        # an earlier version of this slower than the entire rest of the pipeline.
+        for x, y, token in _words_xy(_strokes(band), upscale=False):
+            value = resource_number(token)
+            if value is None:
+                continue
+
+            # Then read only the line beneath that number. Cropped to the clear
+            # window it reads; widened into the badge or the face it does not.
+            # Several offsets and several spans. The label sits a little below
+            # the number and starts near its left edge, but how far the crop can
+            # reach before it hits the team leader depends on which column this
+            # is and on the screen's shape -- on one device the XL label sits
+            # immediately right of his head, so a span generous enough for the
+            # candy column swallows his hair and reads nothing.
+            species = None
+            flat = ""
+            for off in _OVERLAY_LABEL_OFFSETS:
+                for span in _LABEL_SPANS:
+                    label = _read_label(img, x, int(top + y + h * off),
+                                        int(top + y + h * (off + 0.022)), span)
+                    flat = re.sub(r"[^A-Z]", "", label.upper())
+                    if "CAN" not in flat:
+                        continue
+                    species = _match_family(_family_stem(flat), families)
+                    if species is not None:
+                        break
+                if species is not None:
+                    break
+            if species is None:
+                continue
+            votes.setdefault((species.family, "XL" in flat), Counter())[value] += 1
+
+    out: dict[int, ResourceRow] = {}
+    for (family, is_xl), counter in votes.items():
+        species = families.get(re.sub(r"[^A-Z]", "", family.upper()))
+        if species is None:
+            continue
+        row = out.get(species.dex) or ResourceRow(species=species.name)
+        value = counter.most_common(1)[0][0]
+        out[species.dex] = ResourceRow(
+            species=row.species,
+            stardust=row.stardust,
+            candy=value if not is_xl else row.candy,
+            xl_candy=value if is_xl else row.xl_candy,
+        )
+    return out
+
+
+def _match_family(stem: str, families: dict):
+    """Fuzzy-match a partly-read family label to a known family.
+
+    The window clips the label as the card slides, so "GIBLE CANDY" arrives as
+    "GIBLECAND", "GIBLE" or just "E". A prefix long enough to be evidence wins;
+    anything shorter is dropped rather than guessed at.
+    """
+    import difflib
+
+    if len(stem) < 4:
+        return None
+    if stem in families:
+        return families[stem]
+    close = difflib.get_close_matches(stem, families.keys(), n=1, cutoff=0.8)
+    return families[close[0]] if close else None
 
 
 def write_candy_csv(rows: dict[int, ResourceRow], path: Path) -> int:
